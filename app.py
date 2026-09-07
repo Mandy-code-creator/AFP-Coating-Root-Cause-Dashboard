@@ -664,7 +664,7 @@ def build_working_hypothesis(screening_df):
 # ============================================================
 
 
-def make_ok_ng_difference_trend_chart(screening_df, top_n=15):
+def make_ok_ng_relative_difference_chart(screening_df, top_n=15):
     """
     Horizontal bar chart showing the direction and relative magnitude
     of NG vs OK differences.
@@ -749,7 +749,7 @@ def make_ok_ng_difference_trend_chart(screening_df, top_n=15):
         "Relative Difference: (NG - OK) / |OK| × 100 (%)"
     )
     ax.set_title(
-        "OK vs NG Difference Trend (%)",
+        "OK vs NG Relative Difference (%)",
         fontweight="bold",
     )
     ax.grid(
@@ -775,6 +775,150 @@ def make_ok_ng_difference_trend_chart(screening_df, top_n=15):
 
     fig.tight_layout()
     return fig
+
+
+
+def make_process_trend_chart(
+    df,
+    variable,
+    quality_col,
+    date_col,
+):
+    """
+    True time-trend chart.
+
+    X-axis: PRODUCTION_DATE
+    Y-axis: selected numeric parameter
+    Separate daily mean lines for OK and NG.
+
+    The chart is intended to show drift, shifts, clustering,
+    and whether NG observations appear during a different
+    process period from OK observations.
+    """
+    required = [variable, quality_col, date_col]
+    if any(c not in df.columns for c in required):
+        return None
+
+    plot_df = df[[date_col, quality_col, variable]].copy()
+    plot_df[date_col] = pd.to_datetime(
+        plot_df[date_col],
+        errors="coerce",
+    )
+    plot_df[variable] = pd.to_numeric(
+        plot_df[variable],
+        errors="coerce",
+    )
+
+    plot_df = plot_df[
+        plot_df[quality_col].isin(["OK", "NG"])
+    ].dropna(
+        subset=[date_col, variable]
+    )
+
+    if plot_df.empty:
+        return None
+
+    daily = (
+        plot_df
+        .groupby(
+            [
+                pd.Grouper(key=date_col, freq="D"),
+                quality_col,
+            ],
+            observed=True,
+        )[variable]
+        .mean()
+        .reset_index()
+        .sort_values(date_col)
+    )
+
+    if daily.empty:
+        return None
+
+    fig, ax = plt.subplots(figsize=(8.8, 4.6))
+
+    plotted = False
+    for group_name in ["OK", "NG"]:
+        sub = daily[
+            daily[quality_col] == group_name
+        ].sort_values(date_col)
+
+        if sub.empty:
+            continue
+
+        ax.plot(
+            sub[date_col],
+            sub[variable],
+            marker="o",
+            linewidth=1.6,
+            label=group_name,
+        )
+        plotted = True
+
+    if not plotted:
+        plt.close(fig)
+        return None
+
+    ax.set_title(
+        f"{DISPLAY.get(variable, variable)} - Process Trend Over Time",
+        fontweight="bold",
+    )
+    ax.set_xlabel("Production Date")
+    ax.set_ylabel(DISPLAY.get(variable, variable))
+    ax.grid(axis="both", alpha=0.25)
+    ax.legend(title="Quality Class")
+
+    fig.autofmt_xdate()
+    fig.tight_layout()
+    return fig
+
+
+def get_trend_variables(
+    screening_df,
+    df,
+    date_col,
+    top_n=4,
+):
+    """
+    Select top screening factors that also have usable time-series data.
+    """
+    if (
+        screening_df is None
+        or screening_df.empty
+        or date_col not in df.columns
+    ):
+        return []
+
+    result = []
+
+    for variable in screening_df["Source Variable"].dropna().tolist():
+        if variable not in df.columns:
+            continue
+
+        tmp = pd.DataFrame({
+            "date": pd.to_datetime(
+                df[date_col],
+                errors="coerce",
+            ),
+            "value": pd.to_numeric(
+                df[variable],
+                errors="coerce",
+            ),
+        }).dropna()
+
+        if tmp.empty:
+            continue
+
+        # At least two distinct dates are needed for a meaningful trend.
+        if tmp["date"].dt.normalize().nunique() < 2:
+            continue
+
+        result.append(variable)
+
+        if len(result) >= top_n:
+            break
+
+    return result
 
 
 def make_smd_ranking_chart(screening_df, top_n=15):
@@ -1125,7 +1269,7 @@ def generate_html_report(
 
     trend_chart_html = ""
     try:
-        trend_fig = make_ok_ng_difference_trend_chart(
+        trend_fig = make_ok_ng_relative_difference_chart(
             screening_df,
             top_n=15,
         )
@@ -1134,11 +1278,55 @@ def generate_html_report(
             trend_chart_html = (
                 '<div class="chart-card">'
                 f'<img src="data:image/png;base64,{trend_encoded}" '
-                'alt="OK vs NG Difference Trend (%)">'
+                'alt="OK vs NG Relative Difference (%)">'
                 '</div>'
             )
     except Exception:
         trend_chart_html = ""
+
+    time_trend_chart_html = ""
+
+    try:
+        trend_variables = get_trend_variables(
+            screening_df,
+            df,
+            date_col,
+            top_n=4,
+        )
+
+        trend_blocks = []
+
+        for variable in trend_variables:
+            fig = make_process_trend_chart(
+                df,
+                variable,
+                quality_col,
+                date_col,
+            )
+
+            if fig is None:
+                continue
+
+            encoded = figure_to_base64(fig)
+
+            trend_blocks.append(
+                f"""
+                <div class="chart-card">
+                    <img src="data:image/png;base64,{encoded}"
+                         alt="{html_lib.escape(DISPLAY.get(variable, variable))} Process Trend">
+                </div>
+                """
+            )
+
+        if trend_blocks:
+            time_trend_chart_html = (
+                '<div class="chart-grid">'
+                + "".join(trend_blocks)
+                + "</div>"
+            )
+
+    except Exception:
+        time_trend_chart_html = ""
 
     smd_chart_html = ""
     try:
@@ -1279,38 +1467,45 @@ p &lt; 0.05 supports a statistical OK-NG difference. |SMD| indicates the size of
 These results do not prove root cause.
 </p>
 
-<h2>4. OK vs NG Difference Trend (%)</h2>
+<h2>4. OK vs NG Relative Difference (%)</h2>
 {trend_chart_html if trend_chart_html else "<p>No trend chart available.</p>"}
 <p class="note">
 Positive values mean NG &gt; OK; negative values mean NG &lt; OK.
 Relative Difference (%) = (NG Mean - OK Mean) / |OK Mean| × 100.
 </p>
 
-<h2>5. OK vs NG Screening Priority</h2>
+<h2>5. Process Trend Over Time</h2>
+{time_trend_chart_html if time_trend_chart_html else "<p>No multi-date trend data available.</p>"}
+<p class="note">
+X-axis = PRODUCTION_DATE. Each chart shows separate OK and NG daily means to identify
+process drift, shifts, and periods where NG observations cluster.
+</p>
+
+<h2>6. OK vs NG Screening Priority</h2>
 {smd_chart_html if smd_chart_html else "<p>No screening chart available.</p>"}
 <p class="note">
 This chart ranks variables by |SMD|. A longer bar means stronger OK-NG separation,
 but it does not identify root cause or direction.
 </p>
 
-<h2>6. Top Factor Boxplots - OK vs NG Distribution</h2>
+<h2>7. Top Factor Boxplots - OK vs NG Distribution</h2>
 {chart_html if chart_html else "<p>No chart available.</p>"}
 <p class="note">
 Boxplots show the actual distribution of OK and NG values. Greater separation and less overlap
 support a stronger screening signal; overlap means the factor alone may not explain all NG cases.
 </p>
 
-<h2>7. Mechanical Properties</h2>
+<h2>8. Mechanical Properties</h2>
 {mechanical_table}
 <div class="summary-box">{html_lib.escape(mechanical_conclusion)}</div>
 
-<h2>8. Representative Surface QC</h2>
+<h2>9. Representative Surface QC</h2>
 {order_table}
 <p class="note">
 If one representative coil is used for the complete order, these results are descriptive at ORDER level.
 </p>
 
-<h2>9. Recommended Next Actions</h2>
+<h2>10. Recommended Next Actions</h2>
 <ol>
 <li>Collect additional independent OK and NG orders.</li>
 <li>Verify the top 2-3 screening factors with matched samples or a controlled trial.</li>
@@ -1501,10 +1696,10 @@ def generate_word_report(
         run.font.size = Pt(8)
 
 
-    doc.add_heading("4. OK vs NG Difference Trend (%)", level=1)
+    doc.add_heading("4. OK vs NG Relative Difference (%)", level=1)
 
     try:
-        trend_fig = make_ok_ng_difference_trend_chart(
+        trend_fig = make_ok_ng_relative_difference_chart(
             screening_df,
             top_n=15,
         )
@@ -1534,10 +1729,64 @@ def generate_word_report(
                 run.font.size = Pt(8)
     except Exception:
         doc.add_paragraph(
-            "OK vs NG difference trend chart could not be generated."
+            "OK vs NG relative difference chart could not be generated."
         )
 
-    doc.add_heading("5. OK vs NG Screening Priority", level=1)
+    doc.add_heading("5. Process Trend Over Time", level=1)
+
+    try:
+        trend_variables = get_trend_variables(
+            screening_df,
+            df,
+            date_col,
+            top_n=4,
+        )
+
+        if not trend_variables:
+            doc.add_paragraph(
+                "No parameter has sufficient multi-date data for a time trend."
+            )
+        else:
+            for variable in trend_variables:
+                fig = make_process_trend_chart(
+                    df,
+                    variable,
+                    quality_col,
+                    date_col,
+                )
+
+                if fig is None:
+                    continue
+
+                trend_buffer = io.BytesIO()
+                fig.savefig(
+                    trend_buffer,
+                    format="png",
+                    dpi=160,
+                    bbox_inches="tight",
+                )
+                plt.close(fig)
+                trend_buffer.seek(0)
+
+                doc.add_picture(
+                    trend_buffer,
+                    width=Inches(6.6),
+                )
+
+            p = doc.add_paragraph(
+                "X-axis = PRODUCTION_DATE. Separate OK and NG daily means "
+                "show process drift, shifts, and periods where NG observations cluster."
+            )
+            for run in p.runs:
+                run.italic = True
+                run.font.size = Pt(8)
+
+    except Exception as exc:
+        doc.add_paragraph(
+            f"Process trend charts could not be generated: {exc}"
+        )
+
+    doc.add_heading("6. OK vs NG Screening Priority", level=1)
 
     try:
         smd_fig = make_smd_ranking_chart(
@@ -1574,7 +1823,7 @@ def generate_word_report(
             "Screening ranking chart could not be generated."
         )
 
-    doc.add_heading("6. Top Factor Boxplots - OK vs NG Distribution", level=1)
+    doc.add_heading("7. Top Factor Boxplots - OK vs NG Distribution", level=1)
 
     try:
         top_box_vars = (
@@ -1629,7 +1878,7 @@ def generate_word_report(
             f"Boxplots could not be generated: {exc}"
         )
 
-    doc.add_heading("7. Mechanical Properties", level=1)
+    doc.add_heading("8. Mechanical Properties", level=1)
     _add_word_table(
         doc,
         mechanical_summary_df,
@@ -1644,7 +1893,7 @@ def generate_word_report(
     )
     doc.add_paragraph(mechanical_conclusion)
 
-    doc.add_heading("8. Representative Surface QC", level=1)
+    doc.add_heading("9. Representative Surface QC", level=1)
     _add_word_table(
         doc,
         order_summary_df,
@@ -1658,7 +1907,7 @@ def generate_word_report(
         ],
     )
 
-    doc.add_heading("9. Recommended Next Actions", level=1)
+    doc.add_heading("10. Recommended Next Actions", level=1)
     actions = [
         "Collect additional independent OK and NG orders.",
         "Verify the top 2-3 screening factors with matched samples or a controlled trial.",
@@ -2496,8 +2745,8 @@ with tabs[5]:
     else:
         st.info(build_working_hypothesis(screening))
 
-        st.markdown("#### OK vs NG Difference Trend (%)")
-        trend_fig = make_ok_ng_difference_trend_chart(
+        st.markdown("#### OK vs NG Relative Difference (%)")
+        trend_fig = make_ok_ng_relative_difference_chart(
             screening,
             top_n=15,
         )
@@ -2510,6 +2759,48 @@ with tabs[5]:
             "Positive values mean NG > OK; negative values mean NG < OK. "
             "This chart shows direction and relative magnitude, while |SMD| shows separation strength."
         )
+
+
+        st.markdown("#### Process Trend Over Time")
+
+        trend_candidates = get_trend_variables(
+            screening,
+            df,
+            date_col,
+            top_n=8,
+        )
+
+        if trend_candidates:
+            selected_trend_variable = st.selectbox(
+                "Trend parameter",
+                options=trend_candidates,
+                format_func=lambda x: DISPLAY.get(x, x),
+                key="root_cause_time_trend_parameter",
+            )
+
+            process_trend_fig = make_process_trend_chart(
+                df,
+                selected_trend_variable,
+                quality_col,
+                date_col,
+            )
+
+            if process_trend_fig is not None:
+                st.pyplot(
+                    process_trend_fig,
+                    use_container_width=True,
+                )
+
+            st.caption(
+                "X-axis is PRODUCTION_DATE. Separate OK and NG lines show "
+                "whether the parameter shifts or drifts over time and whether NG "
+                "clusters in a different process period."
+            )
+        else:
+            st.info(
+                "At least two production dates with valid numeric data are required "
+                "to generate a time-trend chart."
+            )
         screening["Screening Priority"] = pd.cut(
             screening["|SMD|"],
             bins=[
@@ -2833,9 +3124,9 @@ with tabs[7]:
     )
 
     if not report_screening.empty:
-        st.markdown("#### OK vs NG Difference Trend (%)")
+        st.markdown("#### OK vs NG Relative Difference (%)")
 
-        report_trend_fig = make_ok_ng_difference_trend_chart(
+        report_trend_fig = make_ok_ng_relative_difference_chart(
             report_screening,
             top_n=15,
         )
@@ -2850,6 +3141,38 @@ with tabs[7]:
             "Positive values mean NG > OK; negative values mean NG < OK. "
             "Relative difference is used only to show direction and magnitude."
         )
+
+
+        st.markdown("#### Process Trend Over Time")
+
+        report_trend_variables = get_trend_variables(
+            report_screening,
+            df,
+            date_col,
+            top_n=4,
+        )
+
+        if report_trend_variables:
+            for variable in report_trend_variables:
+                fig = make_process_trend_chart(
+                    df,
+                    variable,
+                    quality_col,
+                    date_col,
+                )
+                if fig is not None:
+                    st.pyplot(
+                        fig,
+                        use_container_width=True,
+                    )
+
+            st.caption(
+                "Time-trend charts use PRODUCTION_DATE and show separate OK and NG daily means."
+            )
+        else:
+            st.info(
+                "No parameter has sufficient multi-date data for a time trend."
+            )
 
         st.markdown("#### OK vs NG Screening Priority")
 
