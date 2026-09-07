@@ -550,6 +550,7 @@ def generate_html_report(
     order_df,
     screening_df,
     order_summary_df,
+    mechanical_summary_df,
     quality_col,
     coil_col,
     order_col,
@@ -629,6 +630,87 @@ def generate_html_report(
     conclusion_html = "".join(
         f"<li>{html_lib.escape(line)}</li>"
         for line in conclusion_lines
+    )
+
+    # Mechanical-property interpretation
+    mechanical_table = dataframe_to_html(
+        mechanical_summary_df,
+        columns=[
+            "Parameter",
+            "OK n",
+            "OK Mean",
+            "NG n",
+            "NG Mean",
+            "NG - OK",
+            "SMD",
+            "|SMD|",
+            "Mann-Whitney p",
+        ],
+    )
+
+    mechanical_lines = []
+
+    if mechanical_summary_df is None or mechanical_summary_df.empty:
+        mechanical_lines.append(
+            "No usable mechanical-property data were available for OK-versus-NG comparison."
+        )
+    else:
+        mech = mechanical_summary_df.copy()
+
+        def _find_row(keyword):
+            mask = mech["Parameter"].astype(str).str.contains(keyword, case=False, regex=False)
+            return mech[mask].iloc[0] if mask.any() else None
+
+        ys_row = _find_row("Yield Strength")
+        ts_row = _find_row("Tensile Strength")
+        el_row = _find_row("Elongation")
+        hard_row = _find_row("Steel Hardness Mean")
+
+        if ys_row is not None and pd.notna(ys_row["NG - OK"]):
+            direction = "higher" if ys_row["NG - OK"] > 0 else "lower"
+            mechanical_lines.append(
+                f"NG Yield Strength is {direction} than OK by approximately "
+                f"{abs(ys_row['NG - OK']):.3f} in the source unit."
+            )
+
+        if ts_row is not None and pd.notna(ts_row["NG - OK"]):
+            direction = "higher" if ts_row["NG - OK"] > 0 else "lower"
+            mechanical_lines.append(
+                f"NG Tensile Strength is {direction} than OK by approximately "
+                f"{abs(ts_row['NG - OK']):.3f} in the source unit."
+            )
+
+        if el_row is not None and pd.notna(el_row["NG - OK"]):
+            direction = "higher" if el_row["NG - OK"] > 0 else "lower"
+            mechanical_lines.append(
+                f"NG Elongation is {direction} than OK by approximately "
+                f"{abs(el_row['NG - OK']):.3f} in the source unit."
+            )
+
+        if hard_row is not None and pd.notna(hard_row["NG - OK"]):
+            direction = "higher" if hard_row["NG - OK"] > 0 else "lower"
+            mechanical_lines.append(
+                f"NG steel hardness is {direction} than OK by approximately "
+                f"{abs(hard_row['NG - OK']):.3f} in the source unit."
+            )
+
+        if not mechanical_lines:
+            mechanical_lines.append(
+                "Mechanical-property variables are present, but the available data do not support a clear directional interpretation."
+            )
+
+    mechanical_lines.append(
+        "For deep drawing, mechanical properties are interpreted as substrate/formability factors. "
+        "They can change the strain and forming load transferred to the AFP coating, but they do not directly measure AFP adhesion."
+    )
+
+    mechanical_lines.append(
+        "r-value and n-value are not included unless corresponding source columns are available in the uploaded dataset."
+    )
+
+    mechanical_html = "".join(
+        f"<li>{html_lib.escape(line)}</li>"
+        for line in mechanical_lines
     )
 
     screening_table = dataframe_to_html(
@@ -832,15 +914,33 @@ Neither metric alone proves root cause.
 Slip / COF, adhesion, wear resistance and roughness are analyzed once per ORDER_NUMBER when one representative coil is used for the entire order.
 </p>
 
-<h2>7. Root-Cause Logic</h2>
+<h2>7. Mechanical Properties and Deep-Drawing Interpretation</h2>
+{mechanical_table}
+<div class="conclusion">
+<ul>
+{mechanical_html}
+</ul>
+</div>
+<p class="note">
+Mechanical properties are supporting factors for deep-drawing performance. 
+A difference in YS, TS, EL or hardness may increase or reduce the forming demand placed on the AFP layer, 
+but a mechanical-property difference alone does not prove that it caused AFP peeling.
+</p>
+
+<h2>8. Root-Cause Logic</h2>
 <div class="action-box">
 <strong>Process / Material Factors</strong>
 &rarr; AFP film thickness and uniformity
 &rarr; surface / adhesion / wear behavior
 &rarr; peeling or white powder after deep drawing.
+<br><br>
+<strong>Mechanical / Formability Factors</strong>
+&rarr; substrate deformation behavior and forming load
+&rarr; strain transferred to AFP coating
+&rarr; risk of cracking / peeling during deep drawing.
 </div>
 
-<h2>8. Recommended Next Step</h2>
+<h2>9. Recommended Next Step</h2>
 <ol>
     <li>Select the top 2-3 candidate factors from the screening table.</li>
     <li>Confirm that OK and NG samples are comparable by product specification, order condition and customer forming condition.</li>
@@ -1924,6 +2024,12 @@ with tabs[7]:
     else:
         report_order_summary = pd.DataFrame()
 
+    report_mechanical_summary = build_summary(
+        df,
+        mechanical_variables,
+        quality_col,
+    ) if mechanical_variables else pd.DataFrame()
+
     conclusion_lines = build_executive_conclusion(
         report_screening
     )
@@ -1933,14 +2039,33 @@ with tabs[7]:
     for line in conclusion_lines:
         st.write(f"- {line}")
 
+    st.markdown("#### Mechanical Properties and Deep-Drawing Interpretation")
+
+    if report_mechanical_summary.empty:
+        st.info("No usable mechanical-property data are available for OK vs NG comparison.")
+    else:
+        st.dataframe(
+            report_mechanical_summary.drop(
+                columns=["Source Variable"],
+                errors="ignore",
+            ),
+            use_container_width=True,
+        )
+        st.caption(
+            "YS, TS, EL and steel hardness are interpreted as substrate/formability factors. "
+            "They can affect the strain transferred to the AFP layer during deep drawing, "
+            "but they do not directly measure AFP adhesion."
+        )
+
     st.markdown("#### What the analysis delivers")
 
     st.write(
         "1. Quantifies the OK-versus-NG differences.\n"
         "2. Ranks candidate factors by the size of their separation.\n"
-        "3. Identifies low-priority variables that currently show little difference.\n"
-        "4. Provides a shortlist for process verification / DOE.\n"
-        "5. Prevents representative order-level QC values from being over-counted."
+        "3. Separately evaluates YS, TS, EL and steel hardness for deep-drawing relevance.\n"
+        "4. Identifies low-priority variables that currently show little difference.\n"
+        "5. Provides a shortlist for process verification / DOE.\n"
+        "6. Prevents representative order-level QC values from being over-counted."
     )
 
     html_report = generate_html_report(
@@ -1948,6 +2073,7 @@ with tabs[7]:
         order_df=order_df,
         screening_df=report_screening,
         order_summary_df=report_order_summary,
+        mechanical_summary_df=report_mechanical_summary,
         quality_col=quality_col,
         coil_col=coil_col,
         order_col=order_col,
