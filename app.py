@@ -356,7 +356,21 @@ def make_boxplot(df, variable, quality_col, title=None):
         labels.append(f"NG (n={len(ng)})")
 
     if plot_data:
-        ax.boxplot(plot_data, labels=labels, showmeans=True)
+        # Matplotlib >= 3.9 uses 'tick_labels' instead of the older 'labels'
+        # argument. Keep a fallback for compatibility with older versions.
+        try:
+            ax.boxplot(
+                plot_data,
+                tick_labels=labels,
+                showmeans=True,
+            )
+        except TypeError:
+            ax.boxplot(
+                plot_data,
+                labels=labels,
+                showmeans=True,
+            )
+
         ax.grid(axis="y", alpha=0.25)
         ax.set_ylabel(DISPLAY.get(variable, variable))
 
