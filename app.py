@@ -2009,7 +2009,7 @@ df["AFP_UP_MINIMUM"] = numeric_minimum(
 
 df["AFP_DOWN_MINIMUM"] = numeric_minimum(
     df,
-    [down_n_col, down_c_col, down_s_col],
+    [down_n, down_c, down_s],
 )
 
 
