@@ -2371,7 +2371,7 @@ with tabs[5]:
         )
         if signed_smd_fig is not None:
             st.pyplot(
-                trend_fig,
+                signed_smd_fig,
                 use_container_width=True,
             )
         st.caption(
