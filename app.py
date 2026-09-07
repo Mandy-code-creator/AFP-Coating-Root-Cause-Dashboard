@@ -109,22 +109,22 @@ DISPLAY = {
     "OVEN_TEMPERATURE": "Oven Temperature",
     "ROLL_TEMPERATURE": "Roll Temperature",
 
-    "AFP_TOP_MEAN": "AFP Top Film Thickness - 3 Point Mean",
-    "AFP_BOTTOM_MEAN": "AFP Bottom Film Thickness - 3 Point Mean",
+    "AFP_TOP_MEAN": "AFP Up Film Thickness - 3 Point Mean",
+    "AFP_BOTTOM_MEAN": "AFP Down Film Thickness - 3 Point Mean",
     "AFP_OVERALL_MEAN": "AFP Overall Film Thickness - 6 Point Mean",
-    "AFP_RECHECK_TOP": "AFP Recheck Top Thickness",
-    "AFP_RECHECK_BOTTOM": "AFP Recheck Bottom Thickness",
-    "AFP_RECHECK_TOTAL": "AFP Recheck Total Thickness",
+    "AFP_RECHECK_TOP": "AFP Recheck Up Thickness",
+    "AFP_RECHECK_BOTTOM": "AFP Recheck Down Thickness",
+    "AFP_RECHECK_TOTAL": "AFP Recheck Total Two-Side Thickness",
 
-    "AFP_TOP_RANGE": "AFP Top Thickness Range",
-    "AFP_BOTTOM_RANGE": "AFP Bottom Thickness Range",
+    "AFP_TOP_RANGE": "AFP Up Thickness Range",
+    "AFP_BOTTOM_RANGE": "AFP Down Thickness Range",
     "AFP_OVERALL_RANGE": "AFP Overall Thickness Range",
     "AFP_OVERALL_CV": "AFP Thickness CV (%)",
 
-    "XRAY_TOP_MEAN": "Metal Coating Thickness - Top Mean",
-    "XRAY_BOTTOM_MEAN": "Metal Coating Thickness - Bottom Mean",
+    "XRAY_TOP_MEAN": "Metal Coating Thickness - Up Mean",
+    "XRAY_BOTTOM_MEAN": "Metal Coating Thickness - Down Mean",
     "XRAY_TOTAL": "Metal Coating Thickness - Total",
-    "XRAY_SIDE_DIFFERENCE": "Top-Bottom Metal Coating Difference",
+    "XRAY_SIDE_DIFFERENCE": "Up-Down Metal Coating Difference",
 
     "HARDNESS_MEAN": "Steel Hardness Mean",
     "HARDNESS_DIFFERENCE": "North-South Hardness Difference",
@@ -220,7 +220,7 @@ def parse_numeric_value(value):
 
 def parse_afp_top_bottom(value):
     """
-    Parse AFP膜厚(um) as Top / Bottom thickness.
+    Parse AFP膜厚(um) as Up / Down thickness.
 
     Example:
         "1.07/1.20" -> (1.07, 1.20)
@@ -520,9 +520,6 @@ def factor_role(variable):
         "AFP_TOP_MEAN",
         "AFP_BOTTOM_MEAN",
         "AFP_OVERALL_MEAN",
-        "AFP_RECHECK_TOP",
-        "AFP_RECHECK_BOTTOM",
-        "AFP_RECHECK_TOTAL",
         "AFP_TOP_RANGE",
         "AFP_BOTTOM_RANGE",
         "AFP_OVERALL_RANGE",
@@ -556,17 +553,11 @@ def technical_interpretation(variable, ok_mean, ng_mean, smd, p_value):
     if variable == "OVEN_TEMPERATURE":
         return f"NG oven temperature is {direction}; possible drying / film-formation factor."
     if variable == "AFP_BOTTOM_MEAN":
-        return f"NG bottom AFP thickness is {direction}; intermediate coating-performance response."
+        return f"NG down-side AFP thickness is {direction}; intermediate coating-performance response."
     if variable == "AFP_BOTTOM_RANGE":
-        return f"NG bottom-side thickness variation is {direction}; strong film-uniformity signal."
+        return f"NG down-side thickness variation is {direction}; strong film-uniformity signal."
     if variable == "AFP_OVERALL_MEAN":
         return f"NG overall AFP thickness is {direction}; intermediate coating-response signal."
-    if variable == "AFP_RECHECK_TOP":
-        return f"NG recheck top-side AFP thickness is {direction}; supports side-specific thickness investigation."
-    if variable == "AFP_RECHECK_BOTTOM":
-        return f"NG recheck bottom-side AFP thickness is {direction}; directly supports bottom-side AFP investigation."
-    if variable == "AFP_RECHECK_TOTAL":
-        return f"NG total two-side AFP recheck thickness is {direction}; use as a total coating-load indicator, not a side-specific uniformity metric."
     if variable in {"AFP_TOP_RANGE", "AFP_OVERALL_RANGE", "AFP_OVERALL_CV"}:
         return f"NG film-uniformity metric is {direction}; evaluate together with coating-process conditions."
     if variable == "HARDNESS_MEAN":
@@ -652,12 +643,12 @@ def build_working_hypothesis(screening_df):
     if "AFP_BOTTOM_MEAN" in by_var.index:
         row = by_var.loc["AFP_BOTTOM_MEAN"]
         if pd.notna(row["NG - OK"]) and abs(row["SMD"]) >= 0.8:
-            parts.append("Bottom AFP mean thickness differs strongly")
+            parts.append("Down AFP mean thickness differs strongly")
 
     if "AFP_BOTTOM_RANGE" in by_var.index:
         row = by_var.loc["AFP_BOTTOM_RANGE"]
         if pd.notna(row["NG - OK"]) and abs(row["SMD"]) >= 0.8:
-            parts.append("Bottom AFP thickness uniformity differs strongly")
+            parts.append("Down AFP thickness uniformity differs strongly")
 
     if parts:
         return (
@@ -680,6 +671,120 @@ def build_working_hypothesis(screening_df):
 # ============================================================
 # HTML REPORT HELPERS
 # ============================================================
+
+
+def make_ok_ng_difference_trend_chart(screening_df, top_n=15):
+    """
+    Horizontal bar chart showing the direction and relative magnitude
+    of NG vs OK differences.
+
+    Relative Difference (%) = (NG Mean - OK Mean) / |OK Mean| * 100
+
+    Positive value: NG > OK
+    Negative value: NG < OK
+
+    Parameters with OK Mean close to zero are excluded because the
+    relative percentage would be unstable or misleading.
+    """
+    if screening_df is None or screening_df.empty:
+        return None
+
+    chart_df = screening_df.copy()
+
+    required = ["Parameter", "OK Mean", "NG Mean", "|SMD|"]
+    if any(c not in chart_df.columns for c in required):
+        return None
+
+    chart_df["OK Mean"] = pd.to_numeric(
+        chart_df["OK Mean"],
+        errors="coerce",
+    )
+    chart_df["NG Mean"] = pd.to_numeric(
+        chart_df["NG Mean"],
+        errors="coerce",
+    )
+    chart_df["|SMD|"] = pd.to_numeric(
+        chart_df["|SMD|"],
+        errors="coerce",
+    )
+
+    chart_df = chart_df.dropna(
+        subset=["OK Mean", "NG Mean", "|SMD|"]
+    ).copy()
+
+    # Avoid unstable division when OK Mean is zero or nearly zero.
+    chart_df = chart_df[
+        chart_df["OK Mean"].abs() > 1e-9
+    ].copy()
+
+    if chart_df.empty:
+        return None
+
+    chart_df["Relative Difference (%)"] = (
+        (chart_df["NG Mean"] - chart_df["OK Mean"])
+        / chart_df["OK Mean"].abs()
+        * 100
+    )
+
+    # Show the most statistically separated factors first.
+    chart_df = (
+        chart_df
+        .sort_values("|SMD|", ascending=False)
+        .head(top_n)
+        .sort_values("Relative Difference (%)", ascending=True)
+    )
+
+    if chart_df.empty:
+        return None
+
+    fig, ax = plt.subplots(
+        figsize=(
+            8.8,
+            max(5.2, 0.42 * len(chart_df) + 1.4),
+        )
+    )
+
+    ax.barh(
+        chart_df["Parameter"],
+        chart_df["Relative Difference (%)"],
+    )
+
+    ax.axvline(
+        0,
+        linewidth=1,
+    )
+
+    ax.set_xlabel(
+        "Relative Difference: (NG - OK) / |OK| × 100 (%)"
+    )
+    ax.set_title(
+        "OK vs NG Difference Trend (%)",
+        fontweight="bold",
+    )
+    ax.grid(
+        axis="x",
+        alpha=0.25,
+    )
+
+    # Add value labels for easier management reading.
+    for i, value in enumerate(chart_df["Relative Difference (%)"]):
+        if pd.isna(value):
+            continue
+        offset = 3 if value >= 0 else -3
+        ha = "left" if value >= 0 else "right"
+        ax.annotate(
+            f"{value:+.1f}%",
+            xy=(value, i),
+            xytext=(offset, 0),
+            textcoords="offset points",
+            va="center",
+            ha=ha,
+            fontsize=8,
+        )
+
+    fig.tight_layout()
+    return fig
+
 
 def make_smd_ranking_chart(screening_df, top_n=15):
     """
@@ -1028,6 +1133,23 @@ def generate_html_report(
         ],
     )
 
+    trend_chart_html = ""
+    try:
+        trend_fig = make_ok_ng_difference_trend_chart(
+            screening_df,
+            top_n=15,
+        )
+        if trend_fig is not None:
+            trend_encoded = figure_to_base64(trend_fig)
+            trend_chart_html = (
+                '<div class="chart-card">'
+                f'<img src="data:image/png;base64,{trend_encoded}" '
+                'alt="OK vs NG Difference Trend (%)">'
+                '</div>'
+            )
+    except Exception:
+        trend_chart_html = ""
+
     smd_chart_html = ""
     try:
         smd_fig = make_smd_ranking_chart(
@@ -1167,27 +1289,34 @@ p &lt; 0.05 supports a statistical OK-NG difference. |SMD| indicates the size of
 These results do not prove root cause.
 </p>
 
-<h2>4. OK vs NG Screening Priority</h2>
+<h2>4. OK vs NG Difference Trend (%)</h2>
+{trend_chart_html if trend_chart_html else "<p>No trend chart available.</p>"}
+<p class="note">
+Positive values mean NG &gt; OK; negative values mean NG &lt; OK.
+Relative Difference (%) = (NG Mean - OK Mean) / |OK Mean| × 100.
+</p>
+
+<h2>5. OK vs NG Screening Priority</h2>
 {smd_chart_html if smd_chart_html else "<p>No screening chart available.</p>"}
 <p class="note">
 This chart ranks variables by |SMD|. A longer bar means stronger OK-NG separation,
 but it does not identify root cause or direction.
 </p>
 
-<h2>5. Main OK vs NG Distribution</h2>
+<h2>6. Main OK vs NG Distribution</h2>
 {chart_html if chart_html else "<p>No chart available.</p>"}
 
-<h2>6. Mechanical Properties</h2>
+<h2>7. Mechanical Properties</h2>
 {mechanical_table}
 <div class="summary-box">{html_lib.escape(mechanical_conclusion)}</div>
 
-<h2>7. Representative Surface QC</h2>
+<h2>8. Representative Surface QC</h2>
 {order_table}
 <p class="note">
 If one representative coil is used for the complete order, these results are descriptive at ORDER level.
 </p>
 
-<h2>8. Recommended Next Actions</h2>
+<h2>9. Recommended Next Actions</h2>
 <ol>
 <li>Collect additional independent OK and NG orders.</li>
 <li>Verify the top 2-3 screening factors with matched samples or a controlled trial.</li>
@@ -1196,8 +1325,8 @@ If one representative coil is used for the complete order, these results are des
 </ol>
 
 <p class="note">
-AFP膜厚(um): 1.07/1.20 means Top = 1.07 µm and Bottom = 1.20 µm.
-Total two-side AFP thickness = Top + Bottom.
+AFP膜厚(um): 1.07/1.20 means Up = 1.07 µm and Down = 1.20 µm.
+Total two-side AFP thickness = Up + Down.
 </p>
 
 </div>
@@ -1378,7 +1507,43 @@ def generate_word_report(
         run.font.size = Pt(8)
 
 
-    doc.add_heading("4. OK vs NG Screening Priority", level=1)
+    doc.add_heading("4. OK vs NG Difference Trend (%)", level=1)
+
+    try:
+        trend_fig = make_ok_ng_difference_trend_chart(
+            screening_df,
+            top_n=15,
+        )
+
+        if trend_fig is not None:
+            trend_buffer = io.BytesIO()
+            trend_fig.savefig(
+                trend_buffer,
+                format="png",
+                dpi=160,
+                bbox_inches="tight",
+            )
+            plt.close(trend_fig)
+            trend_buffer.seek(0)
+
+            doc.add_picture(
+                trend_buffer,
+                width=Inches(6.8),
+            )
+
+            p = doc.add_paragraph(
+                "Positive values mean NG > OK; negative values mean NG < OK. "
+                "Relative Difference (%) = (NG Mean - OK Mean) / |OK Mean| × 100."
+            )
+            for run in p.runs:
+                run.italic = True
+                run.font.size = Pt(8)
+    except Exception:
+        doc.add_paragraph(
+            "OK vs NG difference trend chart could not be generated."
+        )
+
+    doc.add_heading("5. OK vs NG Screening Priority", level=1)
 
     try:
         smd_fig = make_smd_ranking_chart(
@@ -1415,7 +1580,7 @@ def generate_word_report(
             "Screening ranking chart could not be generated."
         )
 
-    doc.add_heading("5. Mechanical Properties", level=1)
+    doc.add_heading("6. Mechanical Properties", level=1)
     _add_word_table(
         doc,
         mechanical_summary_df,
@@ -1430,7 +1595,7 @@ def generate_word_report(
     )
     doc.add_paragraph(mechanical_conclusion)
 
-    doc.add_heading("6. Representative Surface QC", level=1)
+    doc.add_heading("7. Representative Surface QC", level=1)
     _add_word_table(
         doc,
         order_summary_df,
@@ -1444,7 +1609,7 @@ def generate_word_report(
         ],
     )
 
-    doc.add_heading("7. Recommended Next Actions", level=1)
+    doc.add_heading("8. Recommended Next Actions", level=1)
     actions = [
         "Collect additional independent OK and NG orders.",
         "Verify the top 2-3 screening factors with matched samples or a controlled trial.",
@@ -1457,7 +1622,7 @@ def generate_word_report(
     p = doc.add_paragraph()
     r = p.add_run(
         "AFP thickness note: AFP膜厚(um) 1.07/1.20 means "
-        "Top = 1.07 µm and Bottom = 1.20 µm; Total = Top + Bottom."
+        "Up = 1.07 µm and Down = 1.20 µm; Total = Up + Down."
     )
     r.italic = True
     r.font.size = Pt(8)
@@ -1742,9 +1907,6 @@ main_afp_variables = numeric_variables_available(
         "AFP_TOP_MEAN",
         "AFP_BOTTOM_MEAN",
         "AFP_OVERALL_MEAN",
-        "AFP_RECHECK_TOP",
-        "AFP_RECHECK_BOTTOM",
-        "AFP_RECHECK_TOTAL",
     ],
 )
 
@@ -1969,9 +2131,9 @@ with tabs[1]:
     st.subheader("AFP Film Thickness")
 
     st.info(
-        "AFP膜厚(um) is interpreted as Top / Bottom thickness. "
-        "Example: 1.07/1.20 means Top = 1.07 µm and Bottom = 1.20 µm. "
-        "The dashboard does not average these two values together."
+        "AFP膜厚(um) is interpreted as Up / Down thickness. "
+        "Example: 1.07/1.20 means Up = 1.07 µm and Down = 1.20 µm. "
+        "The dashboard does not average the Up and Down values together."
     )
 
     st.markdown("#### Main thickness metrics")
@@ -2287,6 +2449,21 @@ with tabs[5]:
         )
     else:
         st.info(build_working_hypothesis(screening))
+
+        st.markdown("#### OK vs NG Difference Trend (%)")
+        trend_fig = make_ok_ng_difference_trend_chart(
+            screening,
+            top_n=15,
+        )
+        if trend_fig is not None:
+            st.pyplot(
+                trend_fig,
+                use_container_width=True,
+            )
+        st.caption(
+            "Positive values mean NG > OK; negative values mean NG < OK. "
+            "This chart shows direction and relative magnitude, while |SMD| shows separation strength."
+        )
         screening["Screening Priority"] = pd.cut(
             screening["|SMD|"],
             bins=[
@@ -2503,9 +2680,6 @@ with tabs[6]:
         "AFP_TOP_MEAN",
         "AFP_BOTTOM_MEAN",
         "AFP_OVERALL_MEAN",
-        "AFP_RECHECK_TOP",
-        "AFP_RECHECK_BOTTOM",
-        "AFP_RECHECK_TOTAL",
         "XRAY_TOTAL",
         "HARDNESS_MEAN",
         "YS",
@@ -2615,6 +2789,24 @@ with tabs[7]:
     )
 
     if not report_screening.empty:
+        st.markdown("#### OK vs NG Difference Trend (%)")
+
+        report_trend_fig = make_ok_ng_difference_trend_chart(
+            report_screening,
+            top_n=15,
+        )
+
+        if report_trend_fig is not None:
+            st.pyplot(
+                report_trend_fig,
+                use_container_width=True,
+            )
+
+        st.caption(
+            "Positive values mean NG > OK; negative values mean NG < OK. "
+            "Relative difference is used only to show direction and magnitude."
+        )
+
         st.markdown("#### OK vs NG Screening Priority")
 
         smd_preview_fig = make_smd_ranking_chart(
@@ -2736,15 +2928,15 @@ with st.expander("Data Dictionary", expanded=False):
             ["ORDER_NUMBER", "Raw", "Customer / production order number"],
             ["OVEN_TEMPERATURE", "Raw", "Drying oven temperature"],
             ["ROLL_TEMPERATURE", "Raw", "Temperature of the coating / treatment roll"],
-            ["AFP Top Film Thickness - 3 Point Mean", "Derived", "Average of North, Center and South AFP thickness on the top side"],
-            ["AFP Bottom Film Thickness - 3 Point Mean", "Derived", "Average of North, Center and South AFP thickness on the bottom side"],
+            ["AFP Top Film Thickness - 3 Point Mean", "Derived", "Average of North, Center and South AFP thickness on the up side"],
+            ["AFP Bottom Film Thickness - 3 Point Mean", "Derived", "Average of North, Center and South AFP thickness on the down side"],
             ["AFP Overall Film Thickness - 6 Point Mean", "Derived", "Average of all available AFP thickness points on both sides"],
-            ["AFP Recheck Top Thickness", "Derived", "First value in AFP膜厚(um); e.g. 1.07/1.20 -> Top = 1.07 µm"],
-            ["AFP Recheck Bottom Thickness", "Derived", "Second value in AFP膜厚(um); e.g. 1.07/1.20 -> Bottom = 1.20 µm"],
-            ["AFP Recheck Total Thickness", "Derived", "Top plus Bottom AFP recheck thickness; e.g. 1.07 + 1.20 = 2.27 µm"],
-            ["Metal Coating Thickness - Top Mean", "Derived", "Mean of XRAY top North, Center and South"],
-            ["Metal Coating Thickness - Bottom Mean", "Derived", "Mean of XRAY bottom North, Center and South"],
-            ["Metal Coating Thickness - Total", "Derived", "Top mean plus bottom mean"],
+            ["AFP Recheck Up Thickness", "Reference only", "First value in AFP膜厚(um); e.g. 1.07/1.20 -> Up = 1.07 µm"],
+            ["AFP Recheck Down Thickness", "Reference only", "Second value in AFP膜厚(um); e.g. 1.07/1.20 -> Down = 1.20 µm"],
+            ["AFP Recheck Total Two-Side Thickness", "Reference only", "Up plus Down AFP recheck thickness; e.g. 1.07 + 1.20 = 2.27 µm"],
+            ["Metal Coating Thickness - Top Mean", "Derived", "Mean of XRAY up-side North, Center and South"],
+            ["Metal Coating Thickness - Bottom Mean", "Derived", "Mean of XRAY down-side North, Center and South"],
+            ["Metal Coating Thickness - Total", "Derived", "Up mean plus Down mean"],
             ["Steel Hardness Mean", "Derived", "Mean of North and South steel hardness"],
             ["Yield Strength", "Raw / renamed", "TENSILE_YIELD_RAW"],
             ["Tensile Strength", "Raw / renamed", "TENSILE_TENSILE_RAW"],
