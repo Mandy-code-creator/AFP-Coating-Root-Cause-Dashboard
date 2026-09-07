@@ -680,6 +680,56 @@ def build_working_hypothesis(screening_df):
 # ============================================================
 # HTML REPORT HELPERS
 # ============================================================
+
+def make_smd_ranking_chart(screening_df, top_n=15):
+    """
+    Horizontal ranking chart using absolute SMD.
+    This chart shows OK-vs-NG separation strength only.
+    It does NOT prove root cause.
+    """
+    if screening_df is None or screening_df.empty:
+        return None
+
+    chart_df = (
+        screening_df
+        .dropna(subset=["|SMD|"])
+        .copy()
+        .sort_values("|SMD|", ascending=False)
+        .head(top_n)
+        .sort_values("|SMD|", ascending=True)
+    )
+
+    if chart_df.empty:
+        return None
+
+    fig, ax = plt.subplots(
+        figsize=(
+            8.5,
+            max(5.0, 0.42 * len(chart_df) + 1.2),
+        )
+    )
+
+    ax.barh(
+        chart_df["Parameter"],
+        chart_df["|SMD|"],
+    )
+
+    ax.set_xlabel(
+        "Absolute Standardized Mean Difference"
+    )
+    ax.set_title(
+        "OK vs NG Separation - Screening Only",
+        fontweight="bold",
+    )
+    ax.grid(
+        axis="x",
+        alpha=0.25,
+    )
+
+    fig.tight_layout()
+    return fig
+
+
 def figure_to_base64(fig):
     buffer = io.BytesIO()
     fig.savefig(
@@ -978,6 +1028,23 @@ def generate_html_report(
         ],
     )
 
+    smd_chart_html = ""
+    try:
+        smd_fig = make_smd_ranking_chart(
+            screening_df,
+            top_n=15,
+        )
+        if smd_fig is not None:
+            smd_encoded = figure_to_base64(smd_fig)
+            smd_chart_html = (
+                '<div class="chart-card">'
+                f'<img src="data:image/png;base64,{smd_encoded}" '
+                'alt="OK vs NG Separation - Screening Only">'
+                '</div>'
+            )
+    except Exception:
+        smd_chart_html = ""
+
     chart_html = ""
     if screening_df is not None and not screening_df.empty:
         chart_blocks = []
@@ -1100,20 +1167,27 @@ p &lt; 0.05 supports a statistical OK-NG difference. |SMD| indicates the size of
 These results do not prove root cause.
 </p>
 
-<h2>4. Main OK vs NG Charts</h2>
+<h2>4. OK vs NG Screening Priority</h2>
+{smd_chart_html if smd_chart_html else "<p>No screening chart available.</p>"}
+<p class="note">
+This chart ranks variables by |SMD|. A longer bar means stronger OK-NG separation,
+but it does not identify root cause or direction.
+</p>
+
+<h2>5. Main OK vs NG Distribution</h2>
 {chart_html if chart_html else "<p>No chart available.</p>"}
 
-<h2>5. Mechanical Properties</h2>
+<h2>6. Mechanical Properties</h2>
 {mechanical_table}
 <div class="summary-box">{html_lib.escape(mechanical_conclusion)}</div>
 
-<h2>6. Representative Surface QC</h2>
+<h2>7. Representative Surface QC</h2>
 {order_table}
 <p class="note">
 If one representative coil is used for the complete order, these results are descriptive at ORDER level.
 </p>
 
-<h2>7. Recommended Next Actions</h2>
+<h2>8. Recommended Next Actions</h2>
 <ol>
 <li>Collect additional independent OK and NG orders.</li>
 <li>Verify the top 2-3 screening factors with matched samples or a controlled trial.</li>
@@ -1303,7 +1377,45 @@ def generate_word_report(
         run.italic = True
         run.font.size = Pt(8)
 
-    doc.add_heading("4. Mechanical Properties", level=1)
+
+    doc.add_heading("4. OK vs NG Screening Priority", level=1)
+
+    try:
+        smd_fig = make_smd_ranking_chart(
+            screening_df,
+            top_n=15,
+        )
+
+        if smd_fig is not None:
+            image_buffer = io.BytesIO()
+            smd_fig.savefig(
+                image_buffer,
+                format="png",
+                dpi=160,
+                bbox_inches="tight",
+            )
+            plt.close(smd_fig)
+            image_buffer.seek(0)
+
+            doc.add_picture(
+                image_buffer,
+                width=Inches(6.8),
+            )
+
+            p = doc.add_paragraph(
+                "The chart ranks variables by |SMD|. "
+                "Longer bars indicate stronger OK-NG separation only; "
+                "they do not prove root cause or show direction."
+            )
+            for run in p.runs:
+                run.italic = True
+                run.font.size = Pt(8)
+    except Exception:
+        doc.add_paragraph(
+            "Screening ranking chart could not be generated."
+        )
+
+    doc.add_heading("5. Mechanical Properties", level=1)
     _add_word_table(
         doc,
         mechanical_summary_df,
@@ -1318,7 +1430,7 @@ def generate_word_report(
     )
     doc.add_paragraph(mechanical_conclusion)
 
-    doc.add_heading("5. Representative Surface QC", level=1)
+    doc.add_heading("6. Representative Surface QC", level=1)
     _add_word_table(
         doc,
         order_summary_df,
@@ -1332,7 +1444,7 @@ def generate_word_report(
         ],
     )
 
-    doc.add_heading("6. Recommended Next Actions", level=1)
+    doc.add_heading("7. Recommended Next Actions", level=1)
     actions = [
         "Collect additional independent OK and NG orders.",
         "Verify the top 2-3 screening factors with matched samples or a controlled trial.",
@@ -2503,6 +2615,24 @@ with tabs[7]:
     )
 
     if not report_screening.empty:
+        st.markdown("#### OK vs NG Screening Priority")
+
+        smd_preview_fig = make_smd_ranking_chart(
+            report_screening,
+            top_n=15,
+        )
+
+        if smd_preview_fig is not None:
+            st.pyplot(
+                smd_preview_fig,
+                use_container_width=True,
+            )
+
+        st.caption(
+            "The ranking uses |SMD| to show the strength of OK-NG separation. "
+            "It does not prove root cause and does not show direction."
+        )
+
         report_preview = _prepare_report_screening(
             report_screening,
             top_n=10,
