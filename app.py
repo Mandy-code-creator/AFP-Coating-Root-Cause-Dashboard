@@ -105,7 +105,9 @@ DISPLAY = {
     "AFP_TOP_MEAN": "AFP Top Film Thickness - 3 Point Mean",
     "AFP_BOTTOM_MEAN": "AFP Bottom Film Thickness - 3 Point Mean",
     "AFP_OVERALL_MEAN": "AFP Overall Film Thickness - 6 Point Mean",
-    "AFP_RECHECK_MEAN": "AFP Recheck Thickness Mean",
+    "AFP_RECHECK_TOP": "AFP Recheck Top Thickness",
+    "AFP_RECHECK_BOTTOM": "AFP Recheck Bottom Thickness",
+    "AFP_RECHECK_TOTAL": "AFP Recheck Total Thickness",
 
     "AFP_TOP_RANGE": "AFP Top Thickness Range",
     "AFP_BOTTOM_RANGE": "AFP Bottom Thickness Range",
@@ -206,6 +208,48 @@ def parse_numeric_value(value):
         return np.nan
 
     return float(np.mean(part_values))
+
+
+
+def parse_afp_top_bottom(value):
+    """
+    Parse AFP膜厚(um) as Top / Bottom thickness.
+
+    Example:
+        "1.07/1.20" -> (1.07, 1.20)
+
+    IMPORTANT:
+    The two values represent two different coating sides.
+    They must NOT be averaged together.
+    """
+    if pd.isna(value):
+        return (np.nan, np.nan)
+
+    if isinstance(value, (int, float, np.integer, np.floating)):
+        # A single value cannot identify Top and Bottom separately.
+        return (float(value), np.nan)
+
+    text = str(value).strip()
+    if not text:
+        return (np.nan, np.nan)
+
+    text = text.replace("／", "/").replace(",", ".")
+    parts = [p.strip() for p in text.split("/") if p.strip()]
+
+    def _to_number(part):
+        try:
+            return float(part)
+        except Exception:
+            nums = re.findall(r"[-+]?\d*\.?\d+", part)
+            return float(nums[0]) if nums else np.nan
+
+    if len(parts) >= 2:
+        return (_to_number(parts[0]), _to_number(parts[1]))
+
+    if len(parts) == 1:
+        return (_to_number(parts[0]), np.nan)
+
+    return (np.nan, np.nan)
 
 
 def normalize_quality(value):
@@ -469,7 +513,9 @@ def factor_role(variable):
         "AFP_TOP_MEAN",
         "AFP_BOTTOM_MEAN",
         "AFP_OVERALL_MEAN",
-        "AFP_RECHECK_MEAN",
+        "AFP_RECHECK_TOP",
+        "AFP_RECHECK_BOTTOM",
+        "AFP_RECHECK_TOTAL",
         "AFP_TOP_RANGE",
         "AFP_BOTTOM_RANGE",
         "AFP_OVERALL_RANGE",
@@ -508,8 +554,12 @@ def technical_interpretation(variable, ok_mean, ng_mean, smd, p_value):
         return f"NG bottom-side thickness variation is {direction}; strong film-uniformity signal."
     if variable == "AFP_OVERALL_MEAN":
         return f"NG overall AFP thickness is {direction}; intermediate coating-response signal."
-    if variable == "AFP_RECHECK_MEAN":
-        return f"NG recheck AFP thickness is {direction}; supports thickness-related investigation."
+    if variable == "AFP_RECHECK_TOP":
+        return f"NG recheck top-side AFP thickness is {direction}; supports side-specific thickness investigation."
+    if variable == "AFP_RECHECK_BOTTOM":
+        return f"NG recheck bottom-side AFP thickness is {direction}; directly supports bottom-side AFP investigation."
+    if variable == "AFP_RECHECK_TOTAL":
+        return f"NG total two-side AFP recheck thickness is {direction}; use as a total coating-load indicator, not a side-specific uniformity metric."
     if variable in {"AFP_TOP_RANGE", "AFP_OVERALL_RANGE", "AFP_OVERALL_CV"}:
         return f"NG film-uniformity metric is {direction}; evaluate together with coating-process conditions."
     if variable == "HARDNESS_MEAN":
@@ -1103,6 +1153,11 @@ Problem: AFP coating peeling / powder shedding (掉粉) / white powder after cus
 </div>
 
 <h2>3. What This Analysis Achieved</h2>
+<div class="action-box">
+<strong>AFP膜厚(um) interpretation</strong><br>
+A source value such as 1.07/1.20 is interpreted as Top = 1.07 µm and Bottom = 1.20 µm.
+The two values are not averaged. Total two-side AFP thickness is calculated as Top + Bottom.
+</div>
 <ul>
     <li>Quantified the differences between OK and NG coils instead of relying only on visual judgement.</li>
     <li>Ranked process, AFP film, metal coating and mechanical variables by OK-NG separation.</li>
@@ -1172,7 +1227,7 @@ Peeling / powder shedding (掉粉) / cracking after deep drawing
 <h2>10. Recommended Next Step</h2>
 <ol>
     <li>Collect additional independent OK and NG orders. Adding more coils from the same two orders does not solve the independence limitation.</li>
-    <li>Prioritize verification of the current coating-process chain: Roll Temperature -> Bottom AFP Thickness / Uniformity -> customer forming failure.</li>
+    <li>Prioritize verification of the current coating-process chain: Roll Temperature -> Bottom AFP Thickness / Uniformity and AFP Top/Bottom Recheck Thickness -> customer forming failure.</li>
     <li>Measure peeling and powder shedding (掉粉) as separate quantitative responses after reproducing the customer deep-drawing condition.</li>
     <li>For 掉粉, record powder / residue amount or a defined severity grade rather than only OK / NG.</li>
     <li>Obtain or strengthen direct AFP responses: adhesion, wear resistance, coating weight / film weight, and PMT if available.</li>
@@ -1269,7 +1324,6 @@ numeric_source_columns = [
     down_n,
     down_c,
     down_s,
-    COL["afp_recheck"],
     COL["slip"],
     COL["roughness"],
     COL["xray_top_n"],
@@ -1319,9 +1373,18 @@ if all_afp_cols:
     )
 
 if COL["afp_recheck"] in df.columns:
-    df["AFP_RECHECK_MEAN"] = pd.to_numeric(
-        df[COL["afp_recheck"]],
-        errors="coerce",
+    parsed_afp = df[COL["afp_recheck"]].map(parse_afp_top_bottom)
+
+    df["AFP_RECHECK_TOP"] = parsed_afp.map(
+        lambda x: x[0] if isinstance(x, tuple) else np.nan
+    )
+    df["AFP_RECHECK_BOTTOM"] = parsed_afp.map(
+        lambda x: x[1] if isinstance(x, tuple) else np.nan
+    )
+
+    df["AFP_RECHECK_TOTAL"] = (
+        pd.to_numeric(df["AFP_RECHECK_TOP"], errors="coerce")
+        + pd.to_numeric(df["AFP_RECHECK_BOTTOM"], errors="coerce")
     )
 
 
@@ -1443,7 +1506,9 @@ main_afp_variables = numeric_variables_available(
         "AFP_TOP_MEAN",
         "AFP_BOTTOM_MEAN",
         "AFP_OVERALL_MEAN",
-        "AFP_RECHECK_MEAN",
+        "AFP_RECHECK_TOP",
+        "AFP_RECHECK_BOTTOM",
+        "AFP_RECHECK_TOTAL",
     ],
 )
 
@@ -1666,6 +1731,12 @@ with tabs[0]:
 # ============================================================
 with tabs[1]:
     st.subheader("AFP Film Thickness")
+
+    st.info(
+        "AFP膜厚(um) is interpreted as Top / Bottom thickness. "
+        "Example: 1.07/1.20 means Top = 1.07 µm and Bottom = 1.20 µm. "
+        "The dashboard does not average these two values together."
+    )
 
     st.markdown("#### Main thickness metrics")
 
@@ -2196,7 +2267,11 @@ with tabs[6]:
         "AFP_TOP_MEAN",
         "AFP_BOTTOM_MEAN",
         "AFP_OVERALL_MEAN",
-        "AFP_RECHECK_MEAN",
+        "AFP_RECHECK_TOP",
+        "AFP_RECHECK_BOTTOM",
+        "AFP_RECHECK_TOP",
+        "AFP_RECHECK_BOTTOM",
+        "AFP_RECHECK_TOTAL",
         "XRAY_TOTAL",
         "HARDNESS_MEAN",
         "YS",
@@ -2365,6 +2440,21 @@ with tabs[7]:
 # ============================================================
 # DATA DICTIONARY
 # ============================================================
+with st.expander("AFP Thickness Source Check", expanded=False):
+    if COL["afp_recheck"] in df.columns:
+        preview_cols = [COL["afp_recheck"]]
+        for c in ["AFP_RECHECK_TOP", "AFP_RECHECK_BOTTOM", "AFP_RECHECK_TOTAL"]:
+            if c in df.columns:
+                preview_cols.append(c)
+
+        st.write(
+            "Use this table to verify that AFP膜厚(um) is being parsed correctly as Top / Bottom."
+        )
+        st.dataframe(
+            df[preview_cols].head(20),
+            use_container_width=True,
+        )
+
 with st.expander("Data Dictionary", expanded=False):
     dictionary = pd.DataFrame(
         [
@@ -2377,7 +2467,9 @@ with st.expander("Data Dictionary", expanded=False):
             ["AFP Top Film Thickness - 3 Point Mean", "Derived", "Average of North, Center and South AFP thickness on the top side"],
             ["AFP Bottom Film Thickness - 3 Point Mean", "Derived", "Average of North, Center and South AFP thickness on the bottom side"],
             ["AFP Overall Film Thickness - 6 Point Mean", "Derived", "Average of all available AFP thickness points on both sides"],
-            ["AFP Recheck Thickness Mean", "Derived", "Mean of the values stored in AFP thickness recheck field, e.g. 1.07/1.20"],
+            ["AFP Recheck Top Thickness", "Derived", "First value in AFP膜厚(um); e.g. 1.07/1.20 -> Top = 1.07 µm"],
+            ["AFP Recheck Bottom Thickness", "Derived", "Second value in AFP膜厚(um); e.g. 1.07/1.20 -> Bottom = 1.20 µm"],
+            ["AFP Recheck Total Thickness", "Derived", "Top plus Bottom AFP recheck thickness; e.g. 1.07 + 1.20 = 2.27 µm"],
             ["Metal Coating Thickness - Top Mean", "Derived", "Mean of XRAY top North, Center and South"],
             ["Metal Coating Thickness - Bottom Mean", "Derived", "Mean of XRAY bottom North, Center and South"],
             ["Metal Coating Thickness - Total", "Derived", "Top mean plus bottom mean"],
