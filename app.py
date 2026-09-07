@@ -1276,6 +1276,18 @@ except Exception as exc:
 df = raw_df.copy()
 df.columns = [clean_column_name(c) for c in df.columns]
 
+# Warn if the uploaded source contains duplicate column names.
+duplicate_source_columns = (
+    pd.Index(df.columns)[pd.Index(df.columns).duplicated()].unique().tolist()
+)
+if duplicate_source_columns:
+    st.warning(
+        "Duplicate source column names detected: "
+        + ", ".join(map(str, duplicate_source_columns))
+        + ". The Data Detail view will keep the first occurrence for display. "
+        "Please check the source Excel header if these columns are expected to be different."
+    )
+
 quality_col = COL["quality"]
 coil_col = COL["coil"]
 order_col = COL["order"]
@@ -2269,8 +2281,6 @@ with tabs[6]:
         "AFP_OVERALL_MEAN",
         "AFP_RECHECK_TOP",
         "AFP_RECHECK_BOTTOM",
-        "AFP_RECHECK_TOP",
-        "AFP_RECHECK_BOTTOM",
         "AFP_RECHECK_TOTAL",
         "XRAY_TOTAL",
         "HARDNESS_MEAN",
@@ -2279,23 +2289,40 @@ with tabs[6]:
         "EL",
     ]
 
-    default_columns = [
-        c
-        for c in default_columns
-        if c in df.columns
-    ]
+    # Keep only existing columns and remove duplicate names while
+    # preserving their original display order. PyArrow / Streamlit
+    # cannot render a DataFrame with duplicate column names.
+    default_columns = list(
+        dict.fromkeys(
+            c for c in default_columns
+            if c in df.columns
+        )
+    )
+
+    # The source file itself may also contain duplicate column names.
+    # Use unique options for the selector and protect the rendered
+    # DataFrame against duplicate selections.
+    available_display_columns = list(dict.fromkeys(df.columns.tolist()))
 
     selected_columns = st.multiselect(
         "Columns to display",
-        options=list(df.columns),
+        options=available_display_columns,
         default=default_columns,
     )
 
     if not selected_columns:
         selected_columns = default_columns
 
+    selected_columns = list(dict.fromkeys(selected_columns))
+
+    detail_df = df.loc[:, ~df.columns.duplicated()].copy()
+    selected_columns = [
+        c for c in selected_columns
+        if c in detail_df.columns
+    ]
+
     st.dataframe(
-        df[selected_columns],
+        detail_df[selected_columns],
         use_container_width=True,
         height=520,
     )
