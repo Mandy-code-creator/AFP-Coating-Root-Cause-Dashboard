@@ -8,6 +8,13 @@ import pandas as pd
 import streamlit as st
 import matplotlib.pyplot as plt
 
+from docx import Document
+from docx.shared import Inches, Pt
+from docx.enum.text import WD_ALIGN_PARAGRAPH
+from docx.enum.table import WD_TABLE_ALIGNMENT, WD_CELL_VERTICAL_ALIGNMENT
+from docx.oxml import OxmlElement
+from docx.oxml.ns import qn
+
 try:
     from scipy.stats import mannwhitneyu
     SCIPY_AVAILABLE = True
@@ -781,6 +788,123 @@ def dataframe_to_html(df, columns=None, float_digits=3):
     )
 
 
+
+def _report_scope_values(
+    df,
+    quality_col,
+    coil_col,
+    order_col,
+    date_col,
+):
+    n_rows = len(df)
+    n_coils = df[coil_col].nunique() if coil_col in df.columns else n_rows
+    n_orders = df[order_col].nunique() if order_col in df.columns else np.nan
+    n_ng = int((df[quality_col] == "NG").sum())
+    n_total = int(df[quality_col].isin(["OK", "NG"]).sum())
+    ng_rate = n_ng / max(n_total, 1) * 100
+
+    if date_col in df.columns and df[date_col].notna().any():
+        date_text = (
+            f"{df[date_col].min().strftime('%Y-%m-%d')} to "
+            f"{df[date_col].max().strftime('%Y-%m-%d')}"
+        )
+    else:
+        date_text = "Not available"
+
+    return {
+        "coils": n_coils,
+        "orders": n_orders,
+        "ng": n_ng,
+        "ng_rate": ng_rate,
+        "period": date_text,
+    }
+
+
+def _prepare_report_screening(screening_df, top_n=10):
+    if screening_df is None or screening_df.empty:
+        return pd.DataFrame()
+
+    out = screening_df.copy()
+    out["Screening Result"] = out.apply(
+        classify_screening_result,
+        axis=1,
+    )
+    return out.head(top_n).copy()
+
+
+def _concise_mechanical_conclusion(mechanical_summary_df):
+    if mechanical_summary_df is None or mechanical_summary_df.empty:
+        return "No usable mechanical-property data are available."
+
+    try:
+        idx = mechanical_summary_df.set_index("Source Variable")
+        statements = []
+
+        if "HARDNESS_MEAN" in idx.index:
+            d = idx.loc["HARDNESS_MEAN", "NG - OK"]
+            if pd.notna(d):
+                statements.append(
+                    f"NG hardness is {'higher' if d > 0 else 'lower'} than OK."
+                )
+
+        if "EL" in idx.index:
+            d = idx.loc["EL", "NG - OK"]
+            if pd.notna(d):
+                statements.append(
+                    f"NG elongation is {'higher' if d > 0 else 'lower'} than OK."
+                )
+
+        if "YS" in idx.index:
+            p = idx.loc["YS", "Mann-Whitney p"]
+            if pd.notna(p) and p >= 0.05:
+                statements.append(
+                    "Yield strength difference is not statistically significant at p < 0.05."
+                )
+
+        if "TS" in idx.index:
+            p = idx.loc["TS", "Mann-Whitney p"]
+            if pd.notna(p) and p >= 0.05:
+                statements.append(
+                    "Tensile strength difference is not statistically significant at p < 0.05."
+                )
+
+        if (
+            "HARDNESS_MEAN" in idx.index
+            and "EL" in idx.index
+        ):
+            h = idx.loc["HARDNESS_MEAN", "NG - OK"]
+            e = idx.loc["EL", "NG - OK"]
+            if pd.notna(h) and pd.notna(e) and h < 0 and e > 0:
+                statements.append(
+                    "Current direction does not indicate poorer formability in NG; "
+                    "mechanical properties are not the leading hypothesis."
+                )
+
+        return " ".join(statements) if statements else (
+            "Mechanical-property differences are present but do not identify the AFP failure cause."
+        )
+    except Exception:
+        return (
+            "Mechanical-property differences are present but do not identify the AFP failure cause."
+        )
+
+
+def _key_result_sentence(screening_df):
+    if screening_df is None or screening_df.empty:
+        return "No reliable OK-versus-NG ranking is available."
+
+    ranked = screening_df.dropna(subset=["|SMD|"]).copy()
+    if ranked.empty:
+        return "No reliable OK-versus-NG ranking is available."
+
+    top = ranked.head(3)["Parameter"].tolist()
+    return (
+        "Highest OK-versus-NG separation: "
+        + ", ".join(top)
+        + ". These are screening priorities, not confirmed root causes."
+    )
+
+
 def generate_html_report(
     df,
     order_df,
@@ -792,44 +916,71 @@ def generate_html_report(
     order_col,
     date_col,
 ):
-    """
-    Generate a self-contained management report.
-    """
-    report_title = "AFP Coating OK vs NG Root Cause Screening Report"
+    scope = _report_scope_values(
+        df,
+        quality_col,
+        coil_col,
+        order_col,
+        date_col,
+    )
 
-    n_rows = len(df)
-    n_coils = df[coil_col].nunique() if coil_col in df.columns else n_rows
-    n_orders = df[order_col].nunique() if order_col in df.columns else np.nan
-    n_ok = int((df[quality_col] == "OK").sum())
-    n_ng = int((df[quality_col] == "NG").sum())
-    ng_rate = n_ng / max(n_ok + n_ng, 1) * 100
+    top_screening = _prepare_report_screening(
+        screening_df,
+        top_n=10,
+    )
 
-    if date_col in df.columns and df[date_col].notna().any():
-        date_text = (
-            f"{df[date_col].min().strftime('%Y-%m-%d')} to "
-            f"{df[date_col].max().strftime('%Y-%m-%d')}"
-        )
-    else:
-        date_text = "Not available"
+    limitation_text = order_level_limitation_text(
+        df,
+        order_col,
+        quality_col,
+    )
 
-    conclusion_lines = build_executive_conclusion(screening_df)
-    limitation_text = order_level_limitation_text(df, order_col, quality_col)
-    working_hypothesis = build_working_hypothesis(screening_df)
+    key_sentence = _key_result_sentence(screening_df)
+    mechanical_conclusion = _concise_mechanical_conclusion(
+        mechanical_summary_df
+    )
 
-    # Top screening table
-    if screening_df is not None and not screening_df.empty:
-        top_screening = screening_df.copy()
-        top_screening["Screening Result"] = top_screening.apply(
-            classify_screening_result,
-            axis=1,
-        )
-        top_screening = top_screening.head(12)
-    else:
-        top_screening = pd.DataFrame()
+    screening_table = dataframe_to_html(
+        top_screening,
+        columns=[
+            "Parameter",
+            "Factor Role",
+            "OK Mean",
+            "NG Mean",
+            "NG - OK",
+            "|SMD|",
+            "Mann-Whitney p",
+            "Screening Result",
+        ],
+    )
 
-    # Create up to 4 boxplots
+    mechanical_table = dataframe_to_html(
+        mechanical_summary_df,
+        columns=[
+            "Parameter",
+            "OK Mean",
+            "NG Mean",
+            "NG - OK",
+            "|SMD|",
+            "Mann-Whitney p",
+        ],
+    )
+
+    order_table = dataframe_to_html(
+        order_summary_df,
+        columns=[
+            "Parameter",
+            "OK Mean",
+            "NG Mean",
+            "NG - OK",
+            "|SMD|",
+            "Mann-Whitney p",
+        ],
+    )
+
     chart_html = ""
     if screening_df is not None and not screening_df.empty:
+        chart_blocks = []
         top_vars = (
             screening_df["Source Variable"]
             .dropna()
@@ -837,7 +988,6 @@ def generate_html_report(
             .tolist()
         )
 
-        chart_blocks = []
         for variable in top_vars:
             if variable not in df.columns:
                 continue
@@ -851,7 +1001,8 @@ def generate_html_report(
                 chart_blocks.append(
                     f"""
                     <div class="chart-card">
-                        <img src="data:image/png;base64,{encoded}" alt="{html_lib.escape(DISPLAY.get(variable, variable))}">
+                        <img src="data:image/png;base64,{encoded}"
+                             alt="{html_lib.escape(DISPLAY.get(variable, variable))}">
                     </div>
                     """
                 )
@@ -865,385 +1016,346 @@ def generate_html_report(
                 + "</div>"
             )
 
-    conclusion_html = "".join(
-        f"<li>{html_lib.escape(line)}</li>"
-        for line in conclusion_lines
-    )
-
-    # Mechanical-property interpretation
-    mechanical_table = dataframe_to_html(
-        mechanical_summary_df,
-        columns=[
-            "Parameter",
-            "OK n",
-            "OK Mean",
-            "NG n",
-            "NG Mean",
-            "NG - OK",
-            "SMD",
-            "|SMD|",
-            "Mann-Whitney p",
-        ],
-    )
-
-    mechanical_lines = []
-
-    if mechanical_summary_df is None or mechanical_summary_df.empty:
-        mechanical_lines.append(
-            "No usable mechanical-property data were available for OK-versus-NG comparison."
-        )
-    else:
-        mech = mechanical_summary_df.copy()
-
-        def _find_row(keyword):
-            mask = mech["Parameter"].astype(str).str.contains(keyword, case=False, regex=False)
-            return mech[mask].iloc[0] if mask.any() else None
-
-        ys_row = _find_row("Yield Strength")
-        ts_row = _find_row("Tensile Strength")
-        el_row = _find_row("Elongation")
-        hard_row = _find_row("Steel Hardness Mean")
-
-        if ys_row is not None and pd.notna(ys_row["NG - OK"]):
-            direction = "higher" if ys_row["NG - OK"] > 0 else "lower"
-            mechanical_lines.append(
-                f"NG Yield Strength is {direction} than OK by approximately "
-                f"{abs(ys_row['NG - OK']):.3f} in the source unit."
-            )
-
-        if ts_row is not None and pd.notna(ts_row["NG - OK"]):
-            direction = "higher" if ts_row["NG - OK"] > 0 else "lower"
-            mechanical_lines.append(
-                f"NG Tensile Strength is {direction} than OK by approximately "
-                f"{abs(ts_row['NG - OK']):.3f} in the source unit."
-            )
-
-        if el_row is not None and pd.notna(el_row["NG - OK"]):
-            direction = "higher" if el_row["NG - OK"] > 0 else "lower"
-            mechanical_lines.append(
-                f"NG Elongation is {direction} than OK by approximately "
-                f"{abs(el_row['NG - OK']):.3f} in the source unit."
-            )
-
-        if hard_row is not None and pd.notna(hard_row["NG - OK"]):
-            direction = "higher" if hard_row["NG - OK"] > 0 else "lower"
-            mechanical_lines.append(
-                f"NG steel hardness is {direction} than OK by approximately "
-                f"{abs(hard_row['NG - OK']):.3f} in the source unit."
-            )
-
-        if not mechanical_lines:
-            mechanical_lines.append(
-                "Mechanical-property variables are present, but the available data do not support a clear directional interpretation."
-            )
-
-    mechanical_lines.append(
-        "For deep drawing, mechanical properties are interpreted as substrate/formability factors. "
-        "They can change the strain and forming load transferred to the AFP coating, but they do not directly measure AFP adhesion."
-    )
-
-    try:
-        mech_idx = mechanical_summary_df.set_index("Source Variable")
-        if "HARDNESS_MEAN" in mech_idx.index and "EL" in mech_idx.index:
-            hdiff = mech_idx.loc["HARDNESS_MEAN", "NG - OK"]
-            ediff = mech_idx.loc["EL", "NG - OK"]
-            if pd.notna(hdiff) and pd.notna(ediff) and hdiff < 0 and ediff > 0:
-                mechanical_lines.append(
-                    "Current direction shows lower hardness and higher elongation in NG. "
-                    "This does not clearly indicate poorer formability in NG; therefore mechanical properties "
-                    "are not the leading hypothesis at this stage."
-                )
-    except Exception:
-        pass
-
-    mechanical_lines.append(
-        "r-value and n-value are not included unless corresponding source columns are available in the uploaded dataset."
-    )
-
-    mechanical_html = "".join(
-        f"<li>{html_lib.escape(line)}</li>"
-        for line in mechanical_lines
-    )
-
-    screening_table = dataframe_to_html(
-        top_screening,
-        columns=[
-            "Parameter",
-            "Factor Role",
-            "OK n",
-            "OK Mean",
-            "NG n",
-            "NG Mean",
-            "NG - OK",
-            "SMD",
-            "|SMD|",
-            "Mann-Whitney p",
-            "Screening Result",
-            "Technical Interpretation",
-        ],
-    )
-
-    order_table = dataframe_to_html(
-        order_summary_df,
-        columns=[
-            "Parameter",
-            "OK n",
-            "OK Mean",
-            "NG n",
-            "NG Mean",
-            "NG - OK",
-            "SMD",
-            "|SMD|",
-            "Mann-Whitney p",
-        ],
-    )
-
-    html_report = f"""<!DOCTYPE html>
+    return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>{report_title}</title>
+<title>AFP Coating OK vs NG Analysis Report</title>
 <style>
-    body {{
-        font-family: Arial, Helvetica, sans-serif;
-        margin: 0;
-        background: #f5f7fa;
-        color: #1f2937;
-    }}
-    .page {{
-        max-width: 1180px;
-        margin: 24px auto;
-        background: white;
-        padding: 32px 38px;
-        box-shadow: 0 2px 12px rgba(0,0,0,0.08);
-    }}
-    h1 {{ margin-bottom: 5px; }}
-    h2 {{
-        border-bottom: 2px solid #d1d5db;
-        padding-bottom: 7px;
-        margin-top: 32px;
-    }}
-    .subtitle {{
-        color: #6b7280;
-        margin-bottom: 22px;
-    }}
-    .kpi-grid {{
-        display: grid;
-        grid-template-columns: repeat(5, minmax(120px, 1fr));
-        gap: 12px;
-        margin: 18px 0;
-    }}
-    .kpi {{
-        border: 1px solid #e5e7eb;
-        border-radius: 8px;
-        padding: 14px;
-        background: #fafafa;
-    }}
-    .kpi-label {{
-        font-size: 12px;
-        color: #6b7280;
-    }}
-    .kpi-value {{
-        font-size: 23px;
-        font-weight: bold;
-        margin-top: 4px;
-    }}
-    .conclusion {{
-        border-left: 5px solid #374151;
-        padding: 14px 20px;
-        background: #f9fafb;
-    }}
-    .report-table {{
-        border-collapse: collapse;
-        width: 100%;
-        font-size: 12px;
-        margin: 12px 0 20px 0;
-    }}
-    .report-table th,
-    .report-table td {{
-        border: 1px solid #d1d5db;
-        padding: 7px 8px;
-        text-align: right;
-    }}
-    .report-table th:first-child,
-    .report-table td:first-child {{
-        text-align: left;
-    }}
-    .report-table th {{
-        background: #f3f4f6;
-    }}
-    .chart-grid {{
-        display: grid;
-        grid-template-columns: 1fr 1fr;
-        gap: 16px;
-    }}
-    .chart-card {{
-        border: 1px solid #e5e7eb;
-        border-radius: 8px;
-        padding: 8px;
-    }}
-    .chart-card img {{
-        width: 100%;
-        height: auto;
-    }}
-    .note {{
-        font-size: 12px;
-        color: #6b7280;
-        line-height: 1.5;
-    }}
-    .action-box {{
-        background: #f9fafb;
-        padding: 16px 20px;
-        border-radius: 8px;
-    }}
-    @media print {{
-        body {{ background: white; }}
-        .page {{ box-shadow: none; margin: 0; max-width: none; }}
-    }}
+body {{
+    font-family: Arial, Helvetica, sans-serif;
+    background: #f5f7fa;
+    color: #1f2937;
+}}
+.page {{
+    max-width: 1160px;
+    margin: 24px auto;
+    background: white;
+    padding: 32px 38px;
+}}
+h2 {{
+    border-bottom: 1px solid #d1d5db;
+    padding-bottom: 6px;
+    margin-top: 28px;
+}}
+.kpi-grid {{
+    display: grid;
+    grid-template-columns: repeat(5, 1fr);
+    gap: 10px;
+}}
+.kpi {{
+    border: 1px solid #e5e7eb;
+    padding: 12px;
+}}
+.kpi-label {{ font-size: 11px; color: #6b7280; }}
+.kpi-value {{ font-size: 18px; font-weight: bold; }}
+.report-table {{
+    border-collapse: collapse;
+    width: 100%;
+    font-size: 12px;
+}}
+.report-table th, .report-table td {{
+    border: 1px solid #d1d5db;
+    padding: 6px;
+}}
+.report-table th {{ background: #f3f4f6; }}
+.summary-box {{
+    border-left: 4px solid #374151;
+    background: #f9fafb;
+    padding: 12px 16px;
+    margin: 10px 0;
+}}
+.chart-grid {{
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 14px;
+}}
+.chart-card img {{ width: 100%; }}
+.note {{ font-size: 12px; color: #6b7280; }}
 </style>
 </head>
 <body>
 <div class="page">
 
-<h1>{report_title}</h1>
-<div class="subtitle">
-Problem: AFP coating peeling / powder shedding (掉粉) / white powder after customer deep drawing or forming.
-</div>
+<h1>AFP Coating OK vs NG Analysis Report</h1>
+<p>Customer issue: AFP peeling / powder shedding after deep drawing or forming.</p>
 
 <h2>1. Analysis Scope</h2>
 <div class="kpi-grid">
-    <div class="kpi">
-        <div class="kpi-label">Production Period</div>
-        <div class="kpi-value" style="font-size:16px;">{date_text}</div>
-    </div>
-    <div class="kpi">
-        <div class="kpi-label">Unique Coils</div>
-        <div class="kpi-value">{n_coils:,}</div>
-    </div>
-    <div class="kpi">
-        <div class="kpi-label">Orders</div>
-        <div class="kpi-value">{int(n_orders) if pd.notna(n_orders) else "N/A"}</div>
-    </div>
-    <div class="kpi">
-        <div class="kpi-label">NG Records</div>
-        <div class="kpi-value">{n_ng:,}</div>
-    </div>
-    <div class="kpi">
-        <div class="kpi-label">NG Rate</div>
-        <div class="kpi-value">{ng_rate:.1f}%</div>
-    </div>
+<div class="kpi"><div class="kpi-label">Period</div><div class="kpi-value" style="font-size:13px;">{scope["period"]}</div></div>
+<div class="kpi"><div class="kpi-label">Coils</div><div class="kpi-value">{scope["coils"]}</div></div>
+<div class="kpi"><div class="kpi-label">Orders</div><div class="kpi-value">{int(scope["orders"]) if pd.notna(scope["orders"]) else "N/A"}</div></div>
+<div class="kpi"><div class="kpi-label">NG Records</div><div class="kpi-value">{scope["ng"]}</div></div>
+<div class="kpi"><div class="kpi-label">NG Rate</div><div class="kpi-value">{scope["ng_rate"]:.1f}%</div></div>
 </div>
 
-<h2>2. Executive Conclusion</h2>
-<div class="conclusion">
-<ul>
-{conclusion_html}
-</ul>
-</div>
+<h2>2. Key Findings</h2>
+<div class="summary-box">{html_lib.escape(key_sentence)}</div>
+<div class="summary-box"><strong>Data limitation:</strong> {html_lib.escape(limitation_text)}</div>
 
-<div class="action-box" style="margin-top:14px;">
-<strong>Data Limitation</strong><br>
-{html_lib.escape(limitation_text)}
-</div>
-
-<div class="action-box" style="margin-top:14px;">
-<strong>Current Working Hypothesis</strong><br>
-{html_lib.escape(working_hypothesis)}
-</div>
-
-<h2>3. What This Analysis Achieved</h2>
-<div class="action-box">
-<strong>AFP膜厚(um) interpretation</strong><br>
-A source value such as 1.07/1.20 is interpreted as Top = 1.07 µm and Bottom = 1.20 µm.
-The two values are not averaged. Total two-side AFP thickness is calculated as Top + Bottom.
-</div>
-<ul>
-    <li>Quantified the differences between OK and NG coils instead of relying only on visual judgement.</li>
-    <li>Ranked process, AFP film, metal coating and mechanical variables by OK-NG separation.</li>
-    <li>Separated high-priority candidate factors from variables showing little difference.</li>
-    <li>Kept representative surface-QC measurements at ORDER level to avoid pseudo-replication.</li>
-    <li>Created a shortlist of factors that should be verified before establishing process control limits.</li>
-<li>Separately recognizes peeling, cracking and powder shedding (掉粉) as customer-forming failure modes.</li>
-</ul>
-
-<h2>4. Candidate Factor Ranking</h2>
+<h2>3. Candidate Factor Ranking</h2>
 {screening_table}
 <p class="note">
-SMD = standardized mean difference. A larger absolute SMD indicates stronger OK-NG separation.
-The Mann-Whitney p-value is used only as supporting statistical evidence.
-Neither metric alone proves root cause.
+p &lt; 0.05 supports a statistical OK-NG difference. |SMD| indicates the size of the difference.
+These results do not prove root cause.
 </p>
 
-<h2>5. Main OK vs NG Charts</h2>
+<h2>4. Main OK vs NG Charts</h2>
 {chart_html if chart_html else "<p>No chart available.</p>"}
+
+<h2>5. Mechanical Properties</h2>
+{mechanical_table}
+<div class="summary-box">{html_lib.escape(mechanical_conclusion)}</div>
 
 <h2>6. Representative Surface QC</h2>
 {order_table}
 <p class="note">
-Slip / COF, adhesion, wear resistance and roughness are analyzed once per ORDER_NUMBER when one representative coil is used for the entire order.
+If one representative coil is used for the complete order, these results are descriptive at ORDER level.
 </p>
 
-<h2>7. Mechanical Properties and Deep-Drawing Interpretation</h2>
-{mechanical_table}
-<div class="conclusion">
-<ul>
-{mechanical_html}
-</ul>
-</div>
-<p class="note">
-Mechanical properties are supporting factors for deep-drawing performance. 
-A difference in YS, TS, EL or hardness may increase or reduce the forming demand placed on the AFP layer, 
-but a mechanical-property difference alone does not prove that it caused AFP peeling.
-</p>
-
-<h2>8. Customer Failure Mode Interpretation</h2>
-<table class="report-table">
-<tr><th>Failure Mode</th><th>Meaning</th><th>Recommended Evaluation</th></tr>
-<tr><td>Peeling</td><td>AFP layer separates from the coated steel surface.</td><td>Adhesion, film thickness, PMT, surface condition, forming severity.</td></tr>
-<tr><td>Powder Shedding (掉粉)</td><td>AFP layer generates white powder / loose residue during or after forming.</td><td>Wear resistance, adhesion, film uniformity, PMT, roughness, forming friction and repeated rubbing.</td></tr>
-<tr><td>Cracking</td><td>AFP layer cracks under local tensile strain during deep drawing.</td><td>Elongation, hardness, substrate formability, film flexibility and local strain.</td></tr>
-</table>
-<p class="note">
-Powder shedding (掉粉) should be treated as a separate response variable because its mechanism may differ from simple peeling.
-</p>
-
-<h2>9. Root-Cause Logic</h2>
-<div class="action-box">
-<strong>Level 1 - Upstream Process / Material X</strong><br>
-Roll temperature, oven temperature, metallic coating condition, steel mechanical properties
-<br><br>
-&darr;
-<br><br>
-<strong>Level 2 - Intermediate Coating Response Y</strong><br>
-AFP mean thickness, thickness uniformity, adhesion, wear resistance, roughness / friction
-<br><br>
-&darr;
-<br><br>
-<strong>Level 3 - Customer Failure Y</strong><br>
-Peeling / powder shedding (掉粉) / cracking after deep drawing
-</div>
-
-<h2>10. Recommended Next Step</h2>
+<h2>7. Recommended Next Actions</h2>
 <ol>
-    <li>Collect additional independent OK and NG orders. Adding more coils from the same two orders does not solve the independence limitation.</li>
-    <li>Prioritize verification of the current coating-process chain: Roll Temperature -> Bottom AFP Thickness / Uniformity and AFP Top/Bottom Recheck Thickness -> customer forming failure.</li>
-    <li>Measure peeling and powder shedding (掉粉) as separate quantitative responses after reproducing the customer deep-drawing condition.</li>
-    <li>For 掉粉, record powder / residue amount or a defined severity grade rather than only OK / NG.</li>
-    <li>Obtain or strengthen direct AFP responses: adhesion, wear resistance, coating weight / film weight, and PMT if available.</li>
-    <li>Use a controlled process trial or DOE only after the candidate factors are narrowed to 2-3 technically plausible X variables.</li>
-    <li>After causal verification, establish control limits, inspection frequency and a reaction plan.</li>
+<li>Collect additional independent OK and NG orders.</li>
+<li>Verify the top 2-3 screening factors with matched samples or a controlled trial.</li>
+<li>Record peeling and powder shedding separately after customer-equivalent forming.</li>
+<li>After verification, establish process control limits and a reaction plan.</li>
 </ol>
 
 <p class="note">
-This report is a screening and root-cause prioritization report. It must not be interpreted as proof of causality before verification.
+AFP膜厚(um): 1.07/1.20 means Top = 1.07 µm and Bottom = 1.20 µm.
+Total two-side AFP thickness = Top + Bottom.
 </p>
 
 </div>
 </body>
 </html>
 """
-    return html_report
+
+
+def _set_cell_shading(cell, fill="D9EAF7"):
+    tc_pr = cell._tc.get_or_add_tcPr()
+    shd = OxmlElement("w:shd")
+    shd.set(qn("w:fill"), fill)
+    tc_pr.append(shd)
+
+
+def _add_word_table(document, df, columns, max_rows=None):
+    if df is None or df.empty:
+        document.add_paragraph("No data available.")
+        return
+
+    use_cols = [c for c in columns if c in df.columns]
+    if not use_cols:
+        document.add_paragraph("No data available.")
+        return
+
+    out = df[use_cols].copy()
+    if max_rows is not None:
+        out = out.head(max_rows)
+
+    table = document.add_table(
+        rows=1,
+        cols=len(use_cols),
+    )
+    table.style = "Table Grid"
+    table.alignment = WD_TABLE_ALIGNMENT.CENTER
+
+    for i, col in enumerate(use_cols):
+        cell = table.rows[0].cells[i]
+        cell.text = str(col)
+        _set_cell_shading(cell)
+        for run in cell.paragraphs[0].runs:
+            run.bold = True
+            run.font.size = Pt(8)
+
+    for _, row in out.iterrows():
+        cells = table.add_row().cells
+        for i, col in enumerate(use_cols):
+            value = row[col]
+            if pd.isna(value):
+                txt = ""
+            elif isinstance(value, (float, np.floating)):
+                txt = (
+                    f"{value:.4f}"
+                    if col == "Mann-Whitney p"
+                    else f"{value:.3f}"
+                )
+            else:
+                txt = str(value)
+
+            cells[i].text = txt
+            cells[i].vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.CENTER
+            for p in cells[i].paragraphs:
+                for run in p.runs:
+                    run.font.size = Pt(8)
+
+
+def generate_word_report(
+    df,
+    screening_df,
+    order_summary_df,
+    mechanical_summary_df,
+    quality_col,
+    coil_col,
+    order_col,
+    date_col,
+):
+    scope = _report_scope_values(
+        df,
+        quality_col,
+        coil_col,
+        order_col,
+        date_col,
+    )
+
+    top_screening = _prepare_report_screening(
+        screening_df,
+        top_n=10,
+    )
+
+    limitation_text = order_level_limitation_text(
+        df,
+        order_col,
+        quality_col,
+    )
+    key_sentence = _key_result_sentence(screening_df)
+    mechanical_conclusion = _concise_mechanical_conclusion(
+        mechanical_summary_df
+    )
+
+    doc = Document()
+    section = doc.sections[0]
+    section.top_margin = Inches(0.65)
+    section.bottom_margin = Inches(0.65)
+    section.left_margin = Inches(0.55)
+    section.right_margin = Inches(0.55)
+
+    doc.styles["Normal"].font.name = "Arial"
+    doc.styles["Normal"].font.size = Pt(9)
+
+    p = doc.add_paragraph()
+    p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    r = p.add_run("AFP Coating OK vs NG Analysis Report")
+    r.bold = True
+    r.font.name = "Arial"
+    r.font.size = Pt(16)
+
+    p = doc.add_paragraph()
+    p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    r = p.add_run(
+        "Customer issue: AFP peeling / powder shedding after deep drawing or forming"
+    )
+    r.italic = True
+    r.font.size = Pt(9)
+
+    doc.add_heading("1. Analysis Scope", level=1)
+    scope_table = doc.add_table(rows=2, cols=5)
+    scope_table.style = "Table Grid"
+    headers = ["Period", "Coils", "Orders", "NG Records", "NG Rate"]
+    values = [
+        scope["period"],
+        scope["coils"],
+        int(scope["orders"]) if pd.notna(scope["orders"]) else "N/A",
+        scope["ng"],
+        f'{scope["ng_rate"]:.1f}%',
+    ]
+    for i, val in enumerate(headers):
+        scope_table.cell(0, i).text = str(val)
+        _set_cell_shading(scope_table.cell(0, i))
+        for run in scope_table.cell(0, i).paragraphs[0].runs:
+            run.bold = True
+            run.font.size = Pt(8)
+    for i, val in enumerate(values):
+        scope_table.cell(1, i).text = str(val)
+        for run in scope_table.cell(1, i).paragraphs[0].runs:
+            run.font.size = Pt(8)
+
+    doc.add_heading("2. Key Findings", level=1)
+    p = doc.add_paragraph()
+    p.add_run("Main result: ").bold = True
+    p.add_run(key_sentence)
+    p = doc.add_paragraph()
+    p.add_run("Data limitation: ").bold = True
+    p.add_run(limitation_text)
+
+    doc.add_heading("3. Candidate Factor Ranking", level=1)
+    _add_word_table(
+        doc,
+        top_screening,
+        [
+            "Parameter",
+            "Factor Role",
+            "OK Mean",
+            "NG Mean",
+            "NG - OK",
+            "|SMD|",
+            "Mann-Whitney p",
+            "Screening Result",
+        ],
+        max_rows=10,
+    )
+    p = doc.add_paragraph(
+        "Note: p < 0.05 supports a statistical OK-NG difference; "
+        "|SMD| indicates the size of the difference. "
+        "These results do not prove root cause."
+    )
+    for run in p.runs:
+        run.italic = True
+        run.font.size = Pt(8)
+
+    doc.add_heading("4. Mechanical Properties", level=1)
+    _add_word_table(
+        doc,
+        mechanical_summary_df,
+        [
+            "Parameter",
+            "OK Mean",
+            "NG Mean",
+            "NG - OK",
+            "|SMD|",
+            "Mann-Whitney p",
+        ],
+    )
+    doc.add_paragraph(mechanical_conclusion)
+
+    doc.add_heading("5. Representative Surface QC", level=1)
+    _add_word_table(
+        doc,
+        order_summary_df,
+        [
+            "Parameter",
+            "OK Mean",
+            "NG Mean",
+            "NG - OK",
+            "|SMD|",
+            "Mann-Whitney p",
+        ],
+    )
+
+    doc.add_heading("6. Recommended Next Actions", level=1)
+    actions = [
+        "Collect additional independent OK and NG orders.",
+        "Verify the top 2-3 screening factors with matched samples or a controlled trial.",
+        "Record peeling and powder shedding separately after customer-equivalent forming.",
+        "After verification, establish process control limits and a reaction plan.",
+    ]
+    for action in actions:
+        doc.add_paragraph(action, style="List Bullet")
+
+    p = doc.add_paragraph()
+    r = p.add_run(
+        "AFP thickness note: AFP膜厚(um) 1.07/1.20 means "
+        "Top = 1.07 µm and Bottom = 1.20 µm; Total = Top + Bottom."
+    )
+    r.italic = True
+    r.font.size = Pt(8)
+
+    buffer = io.BytesIO()
+    doc.save(buffer)
+    buffer.seek(0)
+    return buffer.getvalue()
+
+
 
 
 # ============================================================
@@ -1633,7 +1745,7 @@ tabs = st.tabs(
         "Mechanical Properties",
         "Root Cause Screening",
         "Data Detail",
-        "HTML Report",
+        "Report Export",
     ]
 )
 
@@ -2340,11 +2452,12 @@ with tabs[6]:
 
 
 
+
 # ============================================================
-# TAB 8 - HTML REPORT
+# TAB 8 - REPORT EXPORT
 # ============================================================
 with tabs[7]:
-    st.subheader("Management Summary and HTML Report")
+    st.subheader("Analysis Report Export")
 
     report_screening_variables = (
         process_variables
@@ -2369,76 +2482,52 @@ with tabs[7]:
     else:
         report_order_summary = pd.DataFrame()
 
-    report_mechanical_summary = build_summary(
-        df,
-        mechanical_variables,
-        quality_col,
-    ) if mechanical_variables else pd.DataFrame()
-
-    conclusion_lines = build_executive_conclusion(
-        report_screening
+    report_mechanical_summary = (
+        build_summary(
+            df,
+            mechanical_variables,
+            quality_col,
+        )
+        if mechanical_variables
+        else pd.DataFrame()
     )
 
-    st.markdown("#### Executive Conclusion")
+    st.markdown("#### Key Findings")
+    st.write(_key_result_sentence(report_screening))
+    st.warning(
+        order_level_limitation_text(
+            df,
+            order_col,
+            quality_col,
+        )
+    )
 
-    for line in conclusion_lines:
-        st.write(f"- {line}")
+    if not report_screening.empty:
+        report_preview = _prepare_report_screening(
+            report_screening,
+            top_n=10,
+        )
 
-    st.error(order_level_limitation_text(df, order_col, quality_col))
-    st.info(build_working_hypothesis(report_screening))
+        preview_cols = [
+            "Parameter",
+            "Factor Role",
+            "OK Mean",
+            "NG Mean",
+            "NG - OK",
+            "|SMD|",
+            "Mann-Whitney p",
+            "Screening Result",
+        ]
+        preview_cols = [
+            c for c in preview_cols
+            if c in report_preview.columns
+        ]
 
-    st.markdown("#### Mechanical Properties and Deep-Drawing Interpretation")
-
-    if report_mechanical_summary.empty:
-        st.info("No usable mechanical-property data are available for OK vs NG comparison.")
-    else:
         st.dataframe(
-            report_mechanical_summary.drop(
-                columns=["Source Variable"],
-                errors="ignore",
-            ),
+            report_preview[preview_cols],
             use_container_width=True,
+            hide_index=True,
         )
-        st.caption(
-            "YS, TS, EL and steel hardness are interpreted as substrate/formability factors. "
-            "They can affect the strain transferred to the AFP layer during deep drawing, "
-            "but they do not directly measure AFP adhesion."
-        )
-
-        # Directional screening note
-        try:
-            mech_idx = report_mechanical_summary.set_index("Source Variable")
-            if "HARDNESS_MEAN" in mech_idx.index and "EL" in mech_idx.index:
-                hdiff = mech_idx.loc["HARDNESS_MEAN", "NG - OK"]
-                ediff = mech_idx.loc["EL", "NG - OK"]
-                if pd.notna(hdiff) and pd.notna(ediff) and hdiff < 0 and ediff > 0:
-                    st.info(
-                        "Current direction: NG shows lower steel hardness and higher elongation. "
-                        "This does not clearly indicate poorer formability in NG, so mechanical properties "
-                        "are not the leading hypothesis at this stage."
-                    )
-        except Exception:
-            pass
-
-    st.markdown("#### Customer Failure Modes")
-
-    st.write(
-        "- **Peeling:** AFP layer separates from the surface.\n"
-        "- **Powder Shedding (掉粉):** white powder / loose coating residue appears after forming or rubbing.\n"
-        "- **Cracking:** AFP layer cracks due to local forming strain.\n\n"
-        "Powder shedding should be evaluated as a separate response because its mechanism may differ from simple peeling."
-    )
-
-    st.markdown("#### What the analysis delivers")
-
-    st.write(
-        "1. Quantifies the OK-versus-NG differences.\n"
-        "2. Ranks candidate factors by the size of their separation.\n"
-        "3. Separately evaluates YS, TS, EL and steel hardness for deep-drawing relevance.\n"
-        "4. Identifies low-priority variables that currently show little difference.\n"
-        "5. Provides a shortlist for process verification / DOE.\n"
-        "6. Prevents representative order-level QC values from being over-counted."
-    )
 
     html_report = generate_html_report(
         df=df,
@@ -2452,16 +2541,42 @@ with tabs[7]:
         date_col=date_col,
     )
 
-    st.download_button(
-        "Download HTML Root Cause Report",
-        data=html_report.encode("utf-8"),
-        file_name="AFP_OK_NG_Root_Cause_Report.html",
-        mime="text/html",
+    word_report = generate_word_report(
+        df=df,
+        screening_df=report_screening,
+        order_summary_df=report_order_summary,
+        mechanical_summary_df=report_mechanical_summary,
+        quality_col=quality_col,
+        coil_col=coil_col,
+        order_col=order_col,
+        date_col=date_col,
     )
 
+    col_html, col_word = st.columns(2)
+
+    with col_html:
+        st.download_button(
+            "Download HTML Report",
+            data=html_report.encode("utf-8"),
+            file_name="AFP_OK_NG_Analysis_Report.html",
+            mime="text/html",
+            use_container_width=True,
+        )
+
+    with col_word:
+        st.download_button(
+            "Download Word Report",
+            data=word_report,
+            file_name="AFP_OK_NG_Analysis_Report.docx",
+            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            use_container_width=True,
+        )
+
     st.caption(
-        "The HTML file is self-contained and can be opened directly in a browser or sent to management."
+        "Both reports use the current dashboard filters and contain the same concise analysis results."
     )
+
+
 
 
 # ============================================================
