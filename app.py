@@ -1574,7 +1574,62 @@ def generate_word_report(
             "Screening ranking chart could not be generated."
         )
 
-    doc.add_heading("6. Mechanical Properties", level=1)
+    doc.add_heading("6. Top Factor Boxplots - OK vs NG Distribution", level=1)
+
+    try:
+        top_box_vars = (
+            screening_df["Source Variable"]
+            .dropna()
+            .head(6)
+            .tolist()
+            if screening_df is not None and not screening_df.empty
+            else []
+        )
+
+        if not top_box_vars:
+            doc.add_paragraph("No boxplot variables are available.")
+        else:
+            for variable in top_box_vars:
+                if variable not in df.columns:
+                    continue
+
+                fig = make_boxplot(
+                    df,
+                    variable,
+                    quality_col,
+                    title=DISPLAY.get(variable, variable),
+                )
+
+                box_buffer = io.BytesIO()
+                fig.savefig(
+                    box_buffer,
+                    format="png",
+                    dpi=160,
+                    bbox_inches="tight",
+                )
+                plt.close(fig)
+                box_buffer.seek(0)
+
+                doc.add_picture(
+                    box_buffer,
+                    width=Inches(6.4),
+                )
+
+            p = doc.add_paragraph(
+                "Boxplots show the actual OK and NG distributions. "
+                "Greater separation and less overlap support a stronger screening signal; "
+                "overlap indicates that the factor alone may not explain all NG cases."
+            )
+            for run in p.runs:
+                run.italic = True
+                run.font.size = Pt(8)
+
+    except Exception as exc:
+        doc.add_paragraph(
+            f"Boxplots could not be generated: {exc}"
+        )
+
+    doc.add_heading("7. Mechanical Properties", level=1)
     _add_word_table(
         doc,
         mechanical_summary_df,
@@ -1589,7 +1644,7 @@ def generate_word_report(
     )
     doc.add_paragraph(mechanical_conclusion)
 
-    doc.add_heading("7. Representative Surface QC", level=1)
+    doc.add_heading("8. Representative Surface QC", level=1)
     _add_word_table(
         doc,
         order_summary_df,
@@ -1603,7 +1658,7 @@ def generate_word_report(
         ],
     )
 
-    doc.add_heading("8. Recommended Next Actions", level=1)
+    doc.add_heading("9. Recommended Next Actions", level=1)
     actions = [
         "Collect additional independent OK and NG orders.",
         "Verify the top 2-3 screening factors with matched samples or a controlled trial.",
