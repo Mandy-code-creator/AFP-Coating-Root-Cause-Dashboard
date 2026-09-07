@@ -1,5 +1,8 @@
 
 import re
+import io
+import base64
+import html as html_lib
 import numpy as np
 import pandas as pd
 import streamlit as st
@@ -430,6 +433,433 @@ def prepare_order_level_data(df, order_col, quality_col, qc_columns):
     return order_qc.join(order_quality).reset_index()
 
 
+
+# ============================================================
+# HTML REPORT HELPERS
+# ============================================================
+def figure_to_base64(fig):
+    buffer = io.BytesIO()
+    fig.savefig(
+        buffer,
+        format="png",
+        dpi=150,
+        bbox_inches="tight",
+    )
+    plt.close(fig)
+    buffer.seek(0)
+    return base64.b64encode(buffer.read()).decode("utf-8")
+
+
+def classify_screening_result(row):
+    """
+    Descriptive screening only.
+    This does not label a factor as a proven root cause.
+    """
+    effect = row.get("|SMD|", np.nan)
+    p_value = row.get("Mann-Whitney p", np.nan)
+
+    if pd.isna(effect):
+        return "Insufficient data"
+
+    if effect >= 0.80 and (pd.isna(p_value) or p_value < 0.05):
+        return "High-priority candidate"
+    if effect >= 0.50:
+        return "Moderate-priority candidate"
+    if effect < 0.20:
+        return "Low separation"
+    return "Needs review"
+
+
+def build_executive_conclusion(screening_df):
+    """
+    Return a short, management-friendly conclusion.
+    """
+    if screening_df is None or screening_df.empty:
+        return [
+            "The available data are insufficient to establish a reliable OK-versus-NG ranking.",
+            "Additional matched OK and NG coils are required before root-cause screening."
+        ]
+
+    ranked = screening_df.dropna(subset=["|SMD|"]).copy()
+    if ranked.empty:
+        return [
+            "The available variables do not contain enough numeric OK-versus-NG information for effect-size screening."
+        ]
+
+    high = ranked[ranked["|SMD|"] >= 0.80]
+    low = ranked[ranked["|SMD|"] < 0.20]
+
+    lines = []
+
+    if not high.empty:
+        top_names = high["Parameter"].head(3).tolist()
+        lines.append(
+            "The strongest OK-versus-NG separation is currently observed in: "
+            + ", ".join(top_names)
+            + ". These variables should be prioritized for root-cause verification."
+        )
+    else:
+        top_names = ranked["Parameter"].head(3).tolist()
+        lines.append(
+            "No variable currently shows a very large OK-versus-NG separation. "
+            "The leading screening candidates are: "
+            + ", ".join(top_names)
+            + "."
+        )
+
+    if not low.empty:
+        low_names = low["Parameter"].head(3).tolist()
+        lines.append(
+            "The following variables currently show little OK-versus-NG separation and can be treated as lower-priority screening factors: "
+            + ", ".join(low_names)
+            + "."
+        )
+
+    lines.append(
+        "These findings identify candidate factors only. Root cause is confirmed only after process review, matched sampling, controlled verification or DOE."
+    )
+
+    return lines
+
+
+def dataframe_to_html(df, columns=None, float_digits=3):
+    if df is None or df.empty:
+        return "<p>No data available.</p>"
+
+    out = df.copy()
+
+    if columns:
+        columns = [c for c in columns if c in out.columns]
+        out = out[columns]
+
+    for c in out.select_dtypes(include=[np.number]).columns:
+        out[c] = out[c].map(
+            lambda x: "" if pd.isna(x) else f"{x:.{float_digits}f}"
+        )
+
+    return out.to_html(
+        index=False,
+        border=0,
+        classes="report-table",
+        escape=True,
+    )
+
+
+def generate_html_report(
+    df,
+    order_df,
+    screening_df,
+    order_summary_df,
+    quality_col,
+    coil_col,
+    order_col,
+    date_col,
+):
+    """
+    Generate a self-contained management report.
+    """
+    report_title = "AFP Coating OK vs NG Root Cause Screening Report"
+
+    n_rows = len(df)
+    n_coils = df[coil_col].nunique() if coil_col in df.columns else n_rows
+    n_orders = df[order_col].nunique() if order_col in df.columns else np.nan
+    n_ok = int((df[quality_col] == "OK").sum())
+    n_ng = int((df[quality_col] == "NG").sum())
+    ng_rate = n_ng / max(n_ok + n_ng, 1) * 100
+
+    if date_col in df.columns and df[date_col].notna().any():
+        date_text = (
+            f"{df[date_col].min().strftime('%Y-%m-%d')} to "
+            f"{df[date_col].max().strftime('%Y-%m-%d')}"
+        )
+    else:
+        date_text = "Not available"
+
+    conclusion_lines = build_executive_conclusion(screening_df)
+
+    # Top screening table
+    if screening_df is not None and not screening_df.empty:
+        top_screening = screening_df.copy()
+        top_screening["Screening Result"] = top_screening.apply(
+            classify_screening_result,
+            axis=1,
+        )
+        top_screening = top_screening.head(12)
+    else:
+        top_screening = pd.DataFrame()
+
+    # Create up to 4 boxplots
+    chart_html = ""
+    if screening_df is not None and not screening_df.empty:
+        top_vars = (
+            screening_df["Source Variable"]
+            .dropna()
+            .head(4)
+            .tolist()
+        )
+
+        chart_blocks = []
+        for variable in top_vars:
+            if variable not in df.columns:
+                continue
+            try:
+                fig = make_boxplot(
+                    df,
+                    variable,
+                    quality_col,
+                )
+                encoded = figure_to_base64(fig)
+                chart_blocks.append(
+                    f"""
+                    <div class="chart-card">
+                        <img src="data:image/png;base64,{encoded}" alt="{html_lib.escape(DISPLAY.get(variable, variable))}">
+                    </div>
+                    """
+                )
+            except Exception:
+                pass
+
+        if chart_blocks:
+            chart_html = (
+                '<div class="chart-grid">'
+                + "".join(chart_blocks)
+                + "</div>"
+            )
+
+    conclusion_html = "".join(
+        f"<li>{html_lib.escape(line)}</li>"
+        for line in conclusion_lines
+    )
+
+    screening_table = dataframe_to_html(
+        top_screening,
+        columns=[
+            "Parameter",
+            "OK n",
+            "OK Mean",
+            "NG n",
+            "NG Mean",
+            "NG - OK",
+            "SMD",
+            "|SMD|",
+            "Mann-Whitney p",
+            "Screening Result",
+        ],
+    )
+
+    order_table = dataframe_to_html(
+        order_summary_df,
+        columns=[
+            "Parameter",
+            "OK n",
+            "OK Mean",
+            "NG n",
+            "NG Mean",
+            "NG - OK",
+            "SMD",
+            "|SMD|",
+            "Mann-Whitney p",
+        ],
+    )
+
+    html_report = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>{report_title}</title>
+<style>
+    body {{
+        font-family: Arial, Helvetica, sans-serif;
+        margin: 0;
+        background: #f5f7fa;
+        color: #1f2937;
+    }}
+    .page {{
+        max-width: 1180px;
+        margin: 24px auto;
+        background: white;
+        padding: 32px 38px;
+        box-shadow: 0 2px 12px rgba(0,0,0,0.08);
+    }}
+    h1 {{ margin-bottom: 5px; }}
+    h2 {{
+        border-bottom: 2px solid #d1d5db;
+        padding-bottom: 7px;
+        margin-top: 32px;
+    }}
+    .subtitle {{
+        color: #6b7280;
+        margin-bottom: 22px;
+    }}
+    .kpi-grid {{
+        display: grid;
+        grid-template-columns: repeat(5, minmax(120px, 1fr));
+        gap: 12px;
+        margin: 18px 0;
+    }}
+    .kpi {{
+        border: 1px solid #e5e7eb;
+        border-radius: 8px;
+        padding: 14px;
+        background: #fafafa;
+    }}
+    .kpi-label {{
+        font-size: 12px;
+        color: #6b7280;
+    }}
+    .kpi-value {{
+        font-size: 23px;
+        font-weight: bold;
+        margin-top: 4px;
+    }}
+    .conclusion {{
+        border-left: 5px solid #374151;
+        padding: 14px 20px;
+        background: #f9fafb;
+    }}
+    .report-table {{
+        border-collapse: collapse;
+        width: 100%;
+        font-size: 12px;
+        margin: 12px 0 20px 0;
+    }}
+    .report-table th,
+    .report-table td {{
+        border: 1px solid #d1d5db;
+        padding: 7px 8px;
+        text-align: right;
+    }}
+    .report-table th:first-child,
+    .report-table td:first-child {{
+        text-align: left;
+    }}
+    .report-table th {{
+        background: #f3f4f6;
+    }}
+    .chart-grid {{
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 16px;
+    }}
+    .chart-card {{
+        border: 1px solid #e5e7eb;
+        border-radius: 8px;
+        padding: 8px;
+    }}
+    .chart-card img {{
+        width: 100%;
+        height: auto;
+    }}
+    .note {{
+        font-size: 12px;
+        color: #6b7280;
+        line-height: 1.5;
+    }}
+    .action-box {{
+        background: #f9fafb;
+        padding: 16px 20px;
+        border-radius: 8px;
+    }}
+    @media print {{
+        body {{ background: white; }}
+        .page {{ box-shadow: none; margin: 0; max-width: none; }}
+    }}
+</style>
+</head>
+<body>
+<div class="page">
+
+<h1>{report_title}</h1>
+<div class="subtitle">
+Problem: AFP coating peeling / white powder after customer deep drawing or forming.
+</div>
+
+<h2>1. Analysis Scope</h2>
+<div class="kpi-grid">
+    <div class="kpi">
+        <div class="kpi-label">Production Period</div>
+        <div class="kpi-value" style="font-size:16px;">{date_text}</div>
+    </div>
+    <div class="kpi">
+        <div class="kpi-label">Unique Coils</div>
+        <div class="kpi-value">{n_coils:,}</div>
+    </div>
+    <div class="kpi">
+        <div class="kpi-label">Orders</div>
+        <div class="kpi-value">{int(n_orders) if pd.notna(n_orders) else "N/A"}</div>
+    </div>
+    <div class="kpi">
+        <div class="kpi-label">NG Records</div>
+        <div class="kpi-value">{n_ng:,}</div>
+    </div>
+    <div class="kpi">
+        <div class="kpi-label">NG Rate</div>
+        <div class="kpi-value">{ng_rate:.1f}%</div>
+    </div>
+</div>
+
+<h2>2. Executive Conclusion</h2>
+<div class="conclusion">
+<ul>
+{conclusion_html}
+</ul>
+</div>
+
+<h2>3. What This Analysis Achieved</h2>
+<ul>
+    <li>Quantified the differences between OK and NG coils instead of relying only on visual judgement.</li>
+    <li>Ranked process, AFP film, metal coating and mechanical variables by OK-NG separation.</li>
+    <li>Separated high-priority candidate factors from variables showing little difference.</li>
+    <li>Kept representative surface-QC measurements at ORDER level to avoid pseudo-replication.</li>
+    <li>Created a shortlist of factors that should be verified before establishing process control limits.</li>
+</ul>
+
+<h2>4. Candidate Factor Ranking</h2>
+{screening_table}
+<p class="note">
+SMD = standardized mean difference. A larger absolute SMD indicates stronger OK-NG separation.
+The Mann-Whitney p-value is used only as supporting statistical evidence.
+Neither metric alone proves root cause.
+</p>
+
+<h2>5. Main OK vs NG Charts</h2>
+{chart_html if chart_html else "<p>No chart available.</p>"}
+
+<h2>6. Representative Surface QC</h2>
+{order_table}
+<p class="note">
+Slip / COF, adhesion, wear resistance and roughness are analyzed once per ORDER_NUMBER when one representative coil is used for the entire order.
+</p>
+
+<h2>7. Root-Cause Logic</h2>
+<div class="action-box">
+<strong>Process / Material Factors</strong>
+&rarr; AFP film thickness and uniformity
+&rarr; surface / adhesion / wear behavior
+&rarr; peeling or white powder after deep drawing.
+</div>
+
+<h2>8. Recommended Next Step</h2>
+<ol>
+    <li>Select the top 2-3 candidate factors from the screening table.</li>
+    <li>Confirm that OK and NG samples are comparable by product specification, order condition and customer forming condition.</li>
+    <li>Collect additional matched coils if the current sample size is small or unbalanced.</li>
+    <li>Verify the suspected factors through a controlled process trial or DOE.</li>
+    <li>Only after verification, establish production control limits and a reaction plan.</li>
+</ol>
+
+<p class="note">
+This report is a screening and root-cause prioritization report. It must not be interpreted as proof of causality before verification.
+</p>
+
+</div>
+</body>
+</html>
+"""
+    return html_report
+
+
 # ============================================================
 # FILE UPLOAD
 # ============================================================
@@ -795,6 +1225,7 @@ tabs = st.tabs(
         "Mechanical Properties",
         "Root Cause Screening",
         "Data Detail",
+        "HTML Report",
     ]
 )
 
@@ -1460,6 +1891,78 @@ with tabs[6]:
         data=cleaned_csv,
         file_name="AFP_OK_NG_cleaned_analysis.csv",
         mime="text/csv",
+    )
+
+
+
+# ============================================================
+# TAB 8 - HTML REPORT
+# ============================================================
+with tabs[7]:
+    st.subheader("Management Summary and HTML Report")
+
+    report_screening_variables = (
+        process_variables
+        + main_afp_variables
+        + afp_uniformity_variables
+        + metal_coating_variables
+        + mechanical_variables
+    )
+
+    report_screening = build_summary(
+        df,
+        report_screening_variables,
+        quality_col,
+    )
+
+    if not order_df.empty and order_numeric_variables:
+        report_order_summary = build_summary(
+            order_df,
+            order_numeric_variables,
+            quality_col,
+        )
+    else:
+        report_order_summary = pd.DataFrame()
+
+    conclusion_lines = build_executive_conclusion(
+        report_screening
+    )
+
+    st.markdown("#### Executive Conclusion")
+
+    for line in conclusion_lines:
+        st.write(f"- {line}")
+
+    st.markdown("#### What the analysis delivers")
+
+    st.write(
+        "1. Quantifies the OK-versus-NG differences.\n"
+        "2. Ranks candidate factors by the size of their separation.\n"
+        "3. Identifies low-priority variables that currently show little difference.\n"
+        "4. Provides a shortlist for process verification / DOE.\n"
+        "5. Prevents representative order-level QC values from being over-counted."
+    )
+
+    html_report = generate_html_report(
+        df=df,
+        order_df=order_df,
+        screening_df=report_screening,
+        order_summary_df=report_order_summary,
+        quality_col=quality_col,
+        coil_col=coil_col,
+        order_col=order_col,
+        date_col=date_col,
+    )
+
+    st.download_button(
+        "Download HTML Root Cause Report",
+        data=html_report.encode("utf-8"),
+        file_name="AFP_OK_NG_Root_Cause_Report.html",
+        mime="text/html",
+    )
+
+    st.caption(
+        "The HTML file is self-contained and can be opened directly in a browser or sent to management."
     )
 
 
