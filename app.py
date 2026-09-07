@@ -109,17 +109,15 @@ DISPLAY = {
     "OVEN_TEMPERATURE": "Oven Temperature",
     "ROLL_TEMPERATURE": "Roll Temperature",
 
-    "AFP_TOP_MEAN": "AFP Up Film Thickness - 3 Point Mean",
-    "AFP_BOTTOM_MEAN": "AFP Down Film Thickness - 3 Point Mean",
-    "AFP_OVERALL_MEAN": "AFP Overall Film Thickness - 6 Point Mean",
+    "AFP_TOP_MEAN": "AFP Up Film Thickness Mean (N-C-S)",
+    "AFP_BOTTOM_MEAN": "AFP Down Film Thickness Mean (N-C-S)",
+
     "AFP_RECHECK_TOP": "AFP Recheck Up Thickness",
     "AFP_RECHECK_BOTTOM": "AFP Recheck Down Thickness",
     "AFP_RECHECK_TOTAL": "AFP Recheck Total Two-Side Thickness",
 
-    "AFP_TOP_RANGE": "AFP Up Thickness Range",
-    "AFP_BOTTOM_RANGE": "AFP Down Thickness Range",
-    "AFP_OVERALL_RANGE": "AFP Overall Thickness Range",
-    "AFP_OVERALL_CV": "AFP Thickness CV (%)",
+    "AFP_TOP_RANGE": "AFP Up Thickness Range (N-C-S)",
+    "AFP_BOTTOM_RANGE": "AFP Down Thickness Range (N-C-S)",
 
     "XRAY_TOP_MEAN": "Metal Coating Thickness - Up Mean",
     "XRAY_BOTTOM_MEAN": "Metal Coating Thickness - Down Mean",
@@ -215,7 +213,6 @@ def parse_numeric_value(value):
         return np.nan
 
     return float(np.mean(part_values))
-
 
 
 def parse_afp_top_bottom(value):
@@ -496,8 +493,6 @@ def prepare_order_level_data(df, order_col, quality_col, qc_columns):
     return order_qc.join(order_quality).reset_index()
 
 
-
-
 def factor_role(variable):
     """
     Classify variables into causal hierarchy for interpretation.
@@ -519,11 +514,10 @@ def factor_role(variable):
     intermediate = {
         "AFP_TOP_MEAN",
         "AFP_BOTTOM_MEAN",
-        "AFP_OVERALL_MEAN",
+
         "AFP_TOP_RANGE",
         "AFP_BOTTOM_RANGE",
-        "AFP_OVERALL_RANGE",
-        "AFP_OVERALL_CV",
+
         "滑度",
         "附著性",
         "耐磨性",
@@ -556,9 +550,6 @@ def technical_interpretation(variable, ok_mean, ng_mean, smd, p_value):
         return f"NG down-side AFP thickness is {direction}; intermediate coating-performance response."
     if variable == "AFP_BOTTOM_RANGE":
         return f"NG down-side thickness variation is {direction}; strong film-uniformity signal."
-    if variable == "AFP_OVERALL_MEAN":
-        return f"NG overall AFP thickness is {direction}; intermediate coating-response signal."
-    if variable in {"AFP_TOP_RANGE", "AFP_OVERALL_RANGE", "AFP_OVERALL_CV"}:
         return f"NG film-uniformity metric is {direction}; evaluate together with coating-process conditions."
     if variable == "HARDNESS_MEAN":
         return f"NG steel hardness is {direction}; mechanical difference, but not direct AFP adhesion evidence."
@@ -943,7 +934,6 @@ def dataframe_to_html(df, columns=None, float_digits=3):
     )
 
 
-
 def _report_scope_values(
     df,
     quality_col,
@@ -1173,7 +1163,7 @@ def generate_html_report(
         top_vars = (
             screening_df["Source Variable"]
             .dropna()
-            .head(4)
+            .head(6)
             .tolist()
         )
 
@@ -1303,8 +1293,12 @@ This chart ranks variables by |SMD|. A longer bar means stronger OK-NG separatio
 but it does not identify root cause or direction.
 </p>
 
-<h2>6. Main OK vs NG Distribution</h2>
+<h2>6. Top Factor Boxplots - OK vs NG Distribution</h2>
 {chart_html if chart_html else "<p>No chart available.</p>"}
+<p class="note">
+Boxplots show the actual distribution of OK and NG values. Greater separation and less overlap
+support a stronger screening signal; overlap means the factor alone may not explain all NG cases.
+</p>
 
 <h2>7. Mechanical Properties</h2>
 {mechanical_table}
@@ -1633,8 +1627,6 @@ def generate_word_report(
     return buffer.getvalue()
 
 
-
-
 # ============================================================
 # FILE UPLOAD
 # ============================================================
@@ -1906,7 +1898,7 @@ main_afp_variables = numeric_variables_available(
     [
         "AFP_TOP_MEAN",
         "AFP_BOTTOM_MEAN",
-        "AFP_OVERALL_MEAN",
+
     ],
 )
 
@@ -1915,8 +1907,7 @@ afp_uniformity_variables = numeric_variables_available(
     [
         "AFP_TOP_RANGE",
         "AFP_BOTTOM_RANGE",
-        "AFP_OVERALL_RANGE",
-        "AFP_OVERALL_CV",
+
     ],
 )
 
@@ -2193,11 +2184,11 @@ with tabs[1]:
                     "Definition": "Maximum minus minimum of North, Center and South on the bottom side",
                 },
                 {
-                    "Metric": "AFP Overall Thickness Range",
+                    "Metric": "",
                     "Definition": "Maximum minus minimum across all available AFP measurement points",
                 },
                 {
-                    "Metric": "AFP Thickness CV (%)",
+                    "Metric": " (%)",
                     "Definition": "Standard deviation divided by mean thickness, multiplied by 100",
                 },
             ]
@@ -2679,7 +2670,7 @@ with tabs[6]:
         COL["roll_temp"],
         "AFP_TOP_MEAN",
         "AFP_BOTTOM_MEAN",
-        "AFP_OVERALL_MEAN",
+
         "XRAY_TOTAL",
         "HARDNESS_MEAN",
         "YS",
@@ -2735,8 +2726,6 @@ with tabs[6]:
         file_name="AFP_OK_NG_cleaned_analysis.csv",
         mime="text/csv",
     )
-
-
 
 
 # ============================================================
@@ -2825,6 +2814,34 @@ with tabs[7]:
             "It does not prove root cause and does not show direction."
         )
 
+
+        st.markdown("#### Top Factor Boxplots - OK vs NG Distribution")
+
+        top_box_vars = (
+            report_screening["Source Variable"]
+            .dropna()
+            .head(6)
+            .tolist()
+        )
+
+        for variable in top_box_vars:
+            if variable not in df.columns:
+                continue
+
+            fig = make_boxplot(
+                df,
+                variable,
+                quality_col,
+            )
+            st.pyplot(
+                fig,
+                use_container_width=True,
+            )
+
+        st.caption(
+            "Boxplots show the actual distribution and overlap between OK and NG."
+        )
+
         report_preview = _prepare_report_screening(
             report_screening,
             top_n=10,
@@ -2899,8 +2916,6 @@ with tabs[7]:
     )
 
 
-
-
 # ============================================================
 # DATA DICTIONARY
 # ============================================================
@@ -2930,7 +2945,7 @@ with st.expander("Data Dictionary", expanded=False):
             ["ROLL_TEMPERATURE", "Raw", "Temperature of the coating / treatment roll"],
             ["AFP Top Film Thickness - 3 Point Mean", "Derived", "Average of North, Center and South AFP thickness on the up side"],
             ["AFP Bottom Film Thickness - 3 Point Mean", "Derived", "Average of North, Center and South AFP thickness on the down side"],
-            ["AFP Overall Film Thickness - 6 Point Mean", "Derived", "Average of all available AFP thickness points on both sides"],
+            ["", "Derived", "Average of all available AFP thickness points on both sides"],
             ["AFP Recheck Up Thickness", "Reference only", "First value in AFP膜厚(um); e.g. 1.07/1.20 -> Up = 1.07 µm"],
             ["AFP Recheck Down Thickness", "Reference only", "Second value in AFP膜厚(um); e.g. 1.07/1.20 -> Down = 1.20 µm"],
             ["AFP Recheck Total Two-Side Thickness", "Reference only", "Up plus Down AFP recheck thickness; e.g. 1.07 + 1.20 = 2.27 µm"],
