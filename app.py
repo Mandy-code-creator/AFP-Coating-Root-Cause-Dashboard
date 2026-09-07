@@ -127,6 +127,94 @@ DISPLAY = {
 
 
 # ============================================================
+# SUPPLIER BENCHMARK - SUPPORTING TECHNICAL EVIDENCE
+# ============================================================
+
+SUPPLIER_COATING_WEIGHT_RISK_BENCHMARK = 700.0  # mg/m²
+
+# Supplier simulation data transcribed from the provided benchmark tables.
+# This dataset is kept separate from internal OK/NG screening and is used
+# only as supporting technical evidence for coating-weight / friction behavior.
+SUPPLIER_BENCHMARK_DATA = pd.DataFrame(
+    [
+        # LOT, Side, Coating Weight, Cr content, Mobility Low, Mobility High, 60kgf, 120kgf, 240kgf
+        ["62A076X", "UP",   970, 0.0135, 0.08, 0.10, 0.5166, 0.3335, 0.2399],
+        ["62A076X", "DOWN", 920, 0.0135, 0.08, 0.10, 0.5377, 0.3468, 0.2571],
+        ["62A075X", "UP",  1028, 0.0145, 0.08, 0.10, 0.5034, 0.3200, 0.2441],
+        ["62A075X", "DOWN", 930, 0.0145, 0.08, 0.11, 0.5196, 0.3504, 0.2623],
+        ["62A074X", "UP",  1030, 0.0120, 0.08, 0.10, 0.4776, 0.3067, 0.2411],
+        ["62A074X", "DOWN", 920, 0.0120, 0.08, 0.10, 0.4949, 0.3618, 0.2607],
+        ["62A073X", "UP",  1017, 0.0112, 0.07, 0.08, 0.4689, 0.3045, 0.2361],
+        ["62A073X", "DOWN", 925, 0.0112, 0.08, 0.10, 0.5353, 0.3511, 0.2626],
+        ["62A072X", "UP",  1003, 0.0127, 0.08, 0.10, 0.5385, 0.3570, 0.2607],
+        ["62A072X", "DOWN", 875, 0.0127, 0.09, 0.11, 0.5274, 0.3796, 0.2569],
+        ["61B962X", "UP",   985, 0.0120, 0.08, 0.10, 0.5486, 0.3531, 0.2524],
+        ["61B962X", "DOWN",1001, 0.0120, 0.07, 0.09, 0.4792, 0.3416, 0.2339],
+        ["61B961X", "UP",  1021, 0.0120, 0.08, 0.10, 0.4872, 0.3331, 0.2546],
+        ["61B961X", "DOWN", 948, 0.0120, 0.09, 0.11, 0.5105, 0.3287, 0.2403],
+        ["61B960X", "UP",  1072, 0.0123, 0.08, 0.09, 0.4774, 0.3246, 0.2473],
+        ["61B960X", "DOWN", 930, 0.0123, 0.08, 0.10, 0.4642, 0.2948, 0.2274],
+
+        ["62A103X", "UP",  1073, 0.0108, 0.07, 0.08, 0.4492, 0.2940, 0.2252],
+        ["62A103X", "DOWN", 895, 0.0108, 0.08, 0.10, 0.5288, 0.3563, 0.2639],
+        ["62A102X", "UP",   780, 0.0109, 0.08, 0.10, 0.5820, 0.3953, 0.2834],
+        ["62A102X", "DOWN", 835, 0.0109, 0.08, 0.10, 0.5717, 0.3722, 0.3002],
+        ["62A101X", "UP",   785, 0.0110, 0.09, 0.11, 0.5338, 0.3575, 0.2719],
+        ["62A101X", "DOWN", 805, 0.0110, 0.09, 0.11, 0.5548, 0.3429, 0.2579],
+        ["62A100X", "UP",   820, 0.0110, 0.08, 0.11, 0.5393, 0.3651, 0.2774],
+        ["62A100X", "DOWN", 780, 0.0110, 0.08, 0.11, 0.5556, 0.3565, 0.2762],
+        ["62A099X", "UP",   825, 0.0094, 0.08, 0.10, 0.5828, 0.3734, 0.2692],
+        ["62A099X", "DOWN", 780, 0.0094, 0.09, 0.11, 0.5931, 0.3736, 0.2933],
+        ["62A098X", "UP",   837, 0.0117, 0.08, 0.10, 0.5481, 0.4204, 0.2741],
+        ["62A098X", "DOWN", 850, 0.0117, 0.08, 0.10, 0.5075, 0.3406, 0.2710],
+        ["62A097X", "UP",   820, 0.0099, 0.08, 0.10, 0.5293, 0.3415, 0.2746],
+        ["62A097X", "DOWN", 870, 0.0099, 0.08, 0.10, 0.5325, 0.3414, 0.2617],
+        ["62A077X", "UP",   896, 0.0109, 0.08, 0.10, 0.4932, 0.3390, 0.2501],
+        ["62A077X", "DOWN", 856, 0.0109, 0.08, 0.10, 0.5035, 0.3520, 0.2400],
+
+        ["5BB404X", "UP",   750, 0.0087, 0.10, 0.11, 0.6709, 0.4372, 0.2950],
+        ["5BB404X", "DOWN",1000, 0.0087, 0.06, 0.08, 0.3609, 0.2412, 0.1759],
+        ["5BB405X", "UP",   800, 0.0123, 0.08, 0.10, 0.5212, 0.3260, 0.2264],
+        ["5BB405X", "DOWN",1030, 0.0123, 0.07, 0.08, 0.3514, 0.2417, 0.1725],
+        ["5BB406X", "UP",   450, 0.0064, 0.19, 0.22, 0.9407, 0.6192, 0.4208],
+        ["5BB406X", "DOWN", 650, 0.0064, 0.10, 0.12, 0.7071, 0.4646, 0.3136],
+        ["5BB439X", "UP",   800, 0.0111, 0.07, 0.09, 0.4692, 0.3112, 0.2019],
+        ["5BB439X", "DOWN",1100, 0.0111, 0.06, 0.07, 0.3497, 0.2317, 0.1753],
+        ["5BB440X", "UP",   700, 0.0096, 0.10, 0.115,0.5549, 0.3845, 0.2661],
+        ["5BB440X", "DOWN",1080, 0.0096, 0.06, 0.08, 0.3287, 0.2400, 0.1640],
+        ["5BB441X", "UP",   960, 0.0116, 0.06, 0.08, 0.3508, 0.2386, 0.1543],
+        ["5BB441X", "DOWN", 750, 0.0116, 0.10, 0.11, 0.4881, 0.3392, 0.2380],
+        ["5BB442X", "UP",   880, 0.0114, 0.07, 0.09, 0.4370, 0.2754, 0.1905],
+        ["5BB442X", "DOWN",1170, 0.0114, 0.06, 0.08, 0.3083, 0.2204, 0.1637],
+        ["5BB443X", "UP",  1100, 0.0125, 0.05, 0.07, 0.3346, 0.2270, 0.1705],
+        ["5BB443X", "DOWN", 800, 0.0125, 0.08, 0.10, 0.4751, 0.3427, 0.2479],
+        ["5BB444X", "UP",  1300, 0.0143, 0.05, 0.06, 0.3317, 0.2226, 0.1455],
+        ["5BB444X", "DOWN", 860, 0.0143, 0.08, 0.09, 0.4235, 0.2703, 0.1973],
+        ["5BB445X", "UP",  1100, 0.0113, 0.05, 0.07, 0.3557, 0.2267, 0.1569],
+        ["5BB445X", "DOWN", 780, 0.0113, 0.08, 0.10, 0.4872, 0.3366, 0.2443],
+    ],
+    columns=[
+        "LOT",
+        "Side",
+        "Coating Weight (mg/m²)",
+        "Cr content (%)",
+        "Mobility Low",
+        "Mobility High",
+        "Friction 60kgf",
+        "Friction 120kgf",
+        "Friction 240kgf",
+    ],
+)
+
+SUPPLIER_BENCHMARK_DATA["Benchmark Status"] = np.where(
+    SUPPLIER_BENCHMARK_DATA["Coating Weight (mg/m²)"]
+    < SUPPLIER_COATING_WEIGHT_RISK_BENCHMARK,
+    "Below 700 mg/m²",
+    "At / Above 700 mg/m²",
+)
+
+
+# ============================================================
 # HELPER FUNCTIONS
 # ============================================================
 def clean_column_name(name):
@@ -254,6 +342,15 @@ def numeric_range(df, columns):
 
     values = df[existing].apply(pd.to_numeric, errors="coerce")
     return values.max(axis=1) - values.min(axis=1)
+
+
+def numeric_minimum(df, columns):
+    existing = [c for c in columns if c and c in df.columns]
+    if not existing:
+        return pd.Series(np.nan, index=df.index)
+
+    values = df[existing].apply(pd.to_numeric, errors="coerce")
+    return values.min(axis=1)
 
 
 def effect_size_smd(ok_values, ng_values):
@@ -477,6 +574,8 @@ def factor_role(variable):
         "AFP_BOTTOM_MEAN",
         "AFP_TOP_RANGE",
         "AFP_BOTTOM_RANGE",
+        "AFP_UP_MINIMUM",
+        "AFP_DOWN_MINIMUM",
     }
 
     confirmation_y = {
@@ -515,6 +614,13 @@ def technical_interpretation(variable, ok_mean, ng_mean, smd, p_value):
         return f"NG down-side AFP thickness is {direction}; intermediate coating-performance response."
     if variable == "AFP_BOTTOM_RANGE":
         return f"NG down-side thickness variation is {direction}; intermediate film-uniformity response."
+
+    if variable == "AFP_UP_MINIMUM":
+        return f"NG up-side minimum AFP thickness is {direction}; local thin spots may increase friction risk."
+
+    if variable == "AFP_DOWN_MINIMUM":
+        return f"NG down-side minimum AFP thickness is {direction}; local thin spots may increase friction risk."
+
     if variable == "HARDNESS_MEAN":
         return f"NG steel hardness is {direction}; mechanical difference, but not direct AFP adhesion evidence."
     if variable == "EL":
@@ -638,6 +744,85 @@ def build_working_hypothesis(screening_df):
 # ============================================================
 # HTML REPORT HELPERS
 # ============================================================
+
+
+def make_supplier_benchmark_chart():
+    """
+    Supplier supporting-evidence chart:
+    coating weight vs friction under 60 kgf.
+    """
+    d = SUPPLIER_BENCHMARK_DATA.copy()
+
+    fig, ax = plt.subplots(figsize=(7.4, 4.8))
+
+    for side in ["UP", "DOWN"]:
+        sub = d[d["Side"] == side]
+        if sub.empty:
+            continue
+
+        ax.scatter(
+            sub["Coating Weight (mg/m²)"],
+            sub["Friction 60kgf"],
+            label=side,
+            alpha=0.85,
+        )
+
+    ax.axvline(
+        SUPPLIER_COATING_WEIGHT_RISK_BENCHMARK,
+        linestyle="--",
+        linewidth=1.2,
+        label="Supplier risk benchmark: 700 mg/m²",
+    )
+
+    ax.set_xlabel("Supplier Coating Weight (mg/m²)")
+    ax.set_ylabel("Friction Coefficient at 60 kgf")
+    ax.set_title(
+        "Supplier Benchmark: Coating Weight vs Friction",
+        fontweight="bold",
+    )
+    ax.grid(alpha=0.25)
+    ax.legend()
+    fig.tight_layout()
+    return fig
+
+
+def supplier_benchmark_summary():
+    d = SUPPLIER_BENCHMARK_DATA.copy()
+
+    summary = (
+        d.groupby("Benchmark Status", observed=True)
+        .agg(
+            Samples=("Coating Weight (mg/m²)", "size"),
+            Mean_Coating_Weight=("Coating Weight (mg/m²)", "mean"),
+            Mean_Friction_60kgf=("Friction 60kgf", "mean"),
+            Mean_Friction_120kgf=("Friction 120kgf", "mean"),
+            Mean_Friction_240kgf=("Friction 240kgf", "mean"),
+        )
+        .reset_index()
+    )
+
+    return summary
+
+
+def supplier_internal_link_summary(df, quality_col):
+    """
+    Compare internal AFP minimum thickness by OK/NG.
+    No direct unit conversion is attempted because supplier benchmark
+    is mg/m² while internal AFP data are µm.
+    """
+    vars_to_use = [
+        v for v in ["AFP_UP_MINIMUM", "AFP_DOWN_MINIMUM"]
+        if v in df.columns
+    ]
+
+    if not vars_to_use:
+        return pd.DataFrame()
+
+    return build_summary(
+        df,
+        vars_to_use,
+        quality_col,
+    )
 
 
 def make_signed_smd_chart(screening_df, top_n=15):
@@ -1049,6 +1234,46 @@ def generate_html_report(
             )
     except Exception:
         signed_smd_chart_html = ""
+
+    supplier_chart_html = ""
+    try:
+        supplier_fig = make_supplier_benchmark_chart()
+        supplier_encoded = figure_to_base64(supplier_fig)
+        supplier_chart_html = (
+            '<div class="chart-card">'
+            f'<img src="data:image/png;base64,{supplier_encoded}" '
+            'alt="Supplier Benchmark: Coating Weight vs Friction">'
+            '</div>'
+        )
+    except Exception:
+        supplier_chart_html = ""
+
+    supplier_summary_html = dataframe_to_html(
+        supplier_benchmark_summary(),
+        columns=[
+            "Benchmark Status",
+            "Samples",
+            "Mean_Coating_Weight",
+            "Mean_Friction_60kgf",
+            "Mean_Friction_120kgf",
+            "Mean_Friction_240kgf",
+        ],
+    )
+
+    internal_min_summary_html = dataframe_to_html(
+        supplier_internal_link_summary(
+            df,
+            quality_col,
+        ),
+        columns=[
+            "Parameter",
+            "OK Mean",
+            "NG Mean",
+            "NG - OK",
+            "SMD",
+            "Mann-Whitney p",
+        ],
+    )
 
     smd_chart_html = ""
     try:
@@ -1565,7 +1790,80 @@ def generate_word_report(
         ],
     )
 
-    doc.add_heading("9. Recommended Next Actions", level=1)
+    doc.add_heading("9. Supplier Benchmark Analysis", level=1)
+
+    p = doc.add_paragraph()
+    p.add_run("Supplier experimental risk benchmark: ").bold = True
+    p.add_run(
+        "Coating weight < 700 mg/m². "
+        "This is supporting technical evidence and is not an internal specification limit."
+    )
+
+    supplier_summary_df = supplier_benchmark_summary()
+    _add_word_table(
+        doc,
+        supplier_summary_df,
+        [
+            "Benchmark Status",
+            "Samples",
+            "Mean_Coating_Weight",
+            "Mean_Friction_60kgf",
+            "Mean_Friction_120kgf",
+            "Mean_Friction_240kgf",
+        ],
+    )
+
+    try:
+        supplier_fig = make_supplier_benchmark_chart()
+        supplier_buffer = io.BytesIO()
+        supplier_fig.savefig(
+            supplier_buffer,
+            format="png",
+            dpi=160,
+            bbox_inches="tight",
+        )
+        plt.close(supplier_fig)
+        supplier_buffer.seek(0)
+
+        doc.add_picture(
+            supplier_buffer,
+            width=Inches(6.6),
+        )
+    except Exception as exc:
+        doc.add_paragraph(
+            f"Supplier benchmark chart could not be generated: {exc}"
+        )
+
+    internal_min_summary = supplier_internal_link_summary(
+        df,
+        quality_col,
+    )
+
+    if not internal_min_summary.empty:
+        doc.add_paragraph("Internal AFP Minimum Thickness Comparison")
+        _add_word_table(
+            doc,
+            internal_min_summary,
+            [
+                "Parameter",
+                "OK Mean",
+                "NG Mean",
+                "NG - OK",
+                "SMD",
+                "Mann-Whitney p",
+            ],
+        )
+
+    p = doc.add_paragraph(
+        "Supplier coating weight is measured in mg/m² while internal AFP thickness is measured in µm. "
+        "No direct conversion is applied until dry-film density or an empirical calibration is available."
+    )
+    for run in p.runs:
+        run.italic = True
+        run.font.size = Pt(8)
+
+    doc.add_heading("10. Recommended Next Actions", level=1)
+
     actions = [
         "Collect additional independent OK and NG orders.",
         "Verify the top 2-3 screening factors with matched samples or a controlled trial.",
@@ -1702,6 +2000,17 @@ if top_afp_cols:
 if bottom_afp_cols:
     df["AFP_BOTTOM_MEAN"] = numeric_mean(df, bottom_afp_cols)
     df["AFP_BOTTOM_RANGE"] = numeric_range(df, bottom_afp_cols)
+
+
+df["AFP_UP_MINIMUM"] = numeric_minimum(
+    df,
+    [COL["up_n"], COL["up_c"], COL["up_s"]],
+)
+
+df["AFP_DOWN_MINIMUM"] = numeric_minimum(
+    df,
+    [down_n_col, down_c_col, down_s_col],
+)
 
 
 # Metal coating thickness
@@ -2480,6 +2789,66 @@ with tabs[5]:
     )
 
 
+    st.markdown("#### Supplier Benchmark Analysis")
+
+    st.info(
+        "Supplier experimental benchmark: coating weight below 700 mg/m² is treated as a "
+        "risk benchmark from supplier simulation data, not as an internal specification limit."
+    )
+
+    supplier_summary_df = supplier_benchmark_summary()
+    st.dataframe(
+        supplier_summary_df,
+        use_container_width=True,
+        hide_index=True,
+    )
+
+    supplier_fig = make_supplier_benchmark_chart()
+    st.pyplot(
+        supplier_fig,
+        use_container_width=True,
+    )
+
+    st.caption(
+        "Supplier evidence is used only to support the mechanism that lower coating weight "
+        "can be associated with higher friction. It is not mixed into internal SMD or p-value ranking."
+    )
+
+    internal_min_summary = supplier_internal_link_summary(
+        df,
+        quality_col,
+    )
+
+    if not internal_min_summary.empty:
+        st.markdown("##### Internal AFP minimum thickness comparison")
+        st.dataframe(
+            internal_min_summary.drop(
+                columns=["Source Variable"],
+                errors="ignore",
+            ),
+            use_container_width=True,
+            hide_index=True,
+        )
+
+        for variable in [
+            v for v in ["AFP_UP_MINIMUM", "AFP_DOWN_MINIMUM"]
+            if v in df.columns
+        ]:
+            st.pyplot(
+                make_boxplot(
+                    df,
+                    variable,
+                    quality_col,
+                ),
+                use_container_width=True,
+            )
+
+    st.warning(
+        "Direct conversion of the supplier benchmark 700 mg/m² to internal AFP thickness (µm) "
+        "is not performed because dry-film density or an empirical mg/m²-to-µm calibration is not yet available."
+    )
+
+
 # ============================================================
 # TAB 7 - DATA DETAIL
 # ============================================================
@@ -2742,43 +3111,3 @@ with tabs[7]:
 
 
 # ============================================================
-# DATA DICTIONARY
-# ============================================================
-with st.expander("Data Dictionary", expanded=False):
-    dictionary = pd.DataFrame(
-        [
-            ["COIL_NO", "Raw", "Steel coil number"],
-            ["PRODUCTION_DATE", "Raw", "Production date"],
-            ["Quality class", "Raw", "OK / NG classification"],
-            ["ORDER_NUMBER", "Raw", "Customer / production order number"],
-            ["OVEN_TEMPERATURE", "Raw", "Drying oven temperature"],
-            ["ROLL_TEMPERATURE", "Raw", "Temperature of the coating / treatment roll"],
-            ["AFP Up Film Thickness Mean (N-C-S)", "Derived", "Average of North, Center and South AFP thickness on the up side"],
-            ["AFP Down Film Thickness Mean (N-C-S)", "Derived", "Average of North, Center and South AFP thickness on the down side"],
-            ["AFP Recheck Up Thickness", "Reference only", "First value in AFP膜厚(um); e.g. 1.07/1.20 -> Up = 1.07 µm"],
-            ["AFP Recheck Down Thickness", "Reference only", "Second value in AFP膜厚(um); e.g. 1.07/1.20 -> Down = 1.20 µm"],
-            ["AFP Recheck Total Two-Side Thickness", "Reference only", "Up plus Down AFP recheck thickness; e.g. 1.07 + 1.20 = 2.27 µm"],
-            ["Metal Coating Thickness - Up Mean", "Derived", "Mean of XRAY up-side North, Center and South"],
-            ["Metal Coating Thickness - Down Mean", "Derived", "Mean of XRAY down-side North, Center and South"],
-            ["Metal Coating Thickness - Total", "Derived", "Up mean plus Down mean"],
-            ["Steel Hardness Mean", "Derived", "Mean of North and South steel hardness"],
-            ["Yield Strength", "Raw / renamed", "TENSILE_YIELD_RAW"],
-            ["Tensile Strength", "Raw / renamed", "TENSILE_TENSILE_RAW"],
-            ["Elongation", "Raw / renamed", "TENSILE_ELONG_RAW"],
-            ["Slip / COF", "Order-level QC", "Representative slip / coefficient of friction result"],
-            ["AFP Adhesion", "Order-level QC", "Representative AFP adhesion result"],
-            ["AFP Wear Resistance", "Order-level QC", "Representative wear-resistance result"],
-            ["Surface Roughness Ra", "Order-level QC", "Representative surface roughness result"],
-        ],
-        columns=[
-            "Displayed Metric",
-            "Type",
-            "Definition",
-        ],
-    )
-
-    st.dataframe(
-        dictionary,
-        hide_index=True,
-        use_container_width=True,
-    )
