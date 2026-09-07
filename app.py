@@ -21,13 +21,6 @@ try:
 except Exception:
     SCIPY_AVAILABLE = False
 
-try:
-    from sklearn.ensemble import RandomForestClassifier
-    from sklearn.metrics import roc_auc_score
-    SKLEARN_AVAILABLE = True
-except Exception:
-    SKLEARN_AVAILABLE = False
-
 
 # ============================================================
 # PAGE CONFIGURATION
@@ -111,10 +104,6 @@ DISPLAY = {
 
     "AFP_TOP_MEAN": "AFP Up Film Thickness Mean (N-C-S)",
     "AFP_BOTTOM_MEAN": "AFP Down Film Thickness Mean (N-C-S)",
-
-    "AFP_RECHECK_TOP": "AFP Recheck Up Thickness",
-    "AFP_RECHECK_BOTTOM": "AFP Recheck Down Thickness",
-    "AFP_RECHECK_TOTAL": "AFP Recheck Total Two-Side Thickness",
 
     "AFP_TOP_RANGE": "AFP Up Thickness Range (N-C-S)",
     "AFP_BOTTOM_RANGE": "AFP Down Thickness Range (N-C-S)",
@@ -200,7 +189,19 @@ def parse_numeric_value(value):
         except Exception:
             pass
 
-        # Numeric interval
+        # Numeric interval, e.g. 0.14-0.16 -> 0.150.
+        # The hyphen between two positive values is a RANGE separator,
+        # not a negative sign for the second number.
+        interval_match = re.fullmatch(
+            r"\s*([-+]?\d*\.?\d+)\s*-\s*([-+]?\d*\.?\d+)\s*",
+            part,
+        )
+        if interval_match:
+            a = float(interval_match.group(1))
+            b = float(interval_match.group(2))
+            part_values.append((a + b) / 2.0)
+            continue
+
         numbers = re.findall(r"[-+]?\d*\.?\d+", part)
         numbers = [float(x) for x in numbers]
 
@@ -213,47 +214,6 @@ def parse_numeric_value(value):
         return np.nan
 
     return float(np.mean(part_values))
-
-
-def parse_afp_top_bottom(value):
-    """
-    Parse AFP膜厚(um) as Up / Down thickness.
-
-    Example:
-        "1.07/1.20" -> (1.07, 1.20)
-
-    IMPORTANT:
-    The two values represent two different coating sides.
-    They must NOT be averaged together.
-    """
-    if pd.isna(value):
-        return (np.nan, np.nan)
-
-    if isinstance(value, (int, float, np.integer, np.floating)):
-        # A single value cannot identify Top and Bottom separately.
-        return (float(value), np.nan)
-
-    text = str(value).strip()
-    if not text:
-        return (np.nan, np.nan)
-
-    text = text.replace("／", "/").replace(",", ".")
-    parts = [p.strip() for p in text.split("/") if p.strip()]
-
-    def _to_number(part):
-        try:
-            return float(part)
-        except Exception:
-            nums = re.findall(r"[-+]?\d*\.?\d+", part)
-            return float(nums[0]) if nums else np.nan
-
-    if len(parts) >= 2:
-        return (_to_number(parts[0]), _to_number(parts[1]))
-
-    if len(parts) == 1:
-        return (_to_number(parts[0]), np.nan)
-
-    return (np.nan, np.nan)
 
 
 def normalize_quality(value):
@@ -494,12 +454,13 @@ def prepare_order_level_data(df, order_col, quality_col, qc_columns):
 
 
 def factor_role(variable):
-    """
-    Classify variables into causal hierarchy for interpretation.
-    """
-    upstream = {
+    """Classify variables by their role in the root-cause chain."""
+    process_x = {
         "OVEN_TEMPERATURE",
         "ROLL_TEMPERATURE",
+    }
+
+    material_x = {
         "XRAY_TOP_MEAN",
         "XRAY_BOTTOM_MEAN",
         "XRAY_TOTAL",
@@ -511,25 +472,29 @@ def factor_role(variable):
         "EL",
     }
 
-    intermediate = {
+    intermediate_y = {
         "AFP_TOP_MEAN",
         "AFP_BOTTOM_MEAN",
-
         "AFP_TOP_RANGE",
         "AFP_BOTTOM_RANGE",
+    }
 
+    confirmation_y = {
         "滑度",
         "附著性",
         "耐磨性",
         "粗糙度(Ra)",
     }
 
-    if variable in upstream:
-        return "Upstream X"
-    if variable in intermediate:
-        return "Intermediate Y"
+    if variable in process_x:
+        return "Upstream Process X"
+    if variable in material_x:
+        return "Upstream Material X"
+    if variable in intermediate_y:
+        return "Intermediate Coating Y"
+    if variable in confirmation_y:
+        return "Confirmation Response Y"
     return "Screening Variable"
-
 
 def technical_interpretation(variable, ok_mean, ng_mean, smd, p_value):
     """
@@ -549,8 +514,7 @@ def technical_interpretation(variable, ok_mean, ng_mean, smd, p_value):
     if variable == "AFP_BOTTOM_MEAN":
         return f"NG down-side AFP thickness is {direction}; intermediate coating-performance response."
     if variable == "AFP_BOTTOM_RANGE":
-        return f"NG down-side thickness variation is {direction}; strong film-uniformity signal."
-        return f"NG film-uniformity metric is {direction}; evaluate together with coating-process conditions."
+        return f"NG down-side thickness variation is {direction}; intermediate film-uniformity response."
     if variable == "HARDNESS_MEAN":
         return f"NG steel hardness is {direction}; mechanical difference, but not direct AFP adhesion evidence."
     if variable == "EL":
@@ -617,46 +581,58 @@ def order_level_limitation_text(df, order_col, quality_col):
 
 def build_working_hypothesis(screening_df):
     """
-    Build a concise current working hypothesis from available results.
+    Build a data-driven screening hypothesis from the strongest upstream X
+    and intermediate coating Y signals. It deliberately avoids hard-coding
+    one historical mechanism.
     """
     if screening_df is None or screening_df.empty:
         return "Insufficient data to construct a working hypothesis."
 
-    by_var = screening_df.set_index("Source Variable", drop=False)
+    work = screening_df.dropna(subset=["|SMD|"]).copy()
+    if work.empty:
+        return "Insufficient data to construct a working hypothesis."
 
-    parts = []
+    strong = work[work["|SMD|"] >= 0.80].copy()
+    upstream = strong[
+        strong["Factor Role"].isin(["Upstream Process X", "Upstream Material X"])
+    ]
+    intermediate = strong[
+        strong["Factor Role"] == "Intermediate Coating Y"
+    ]
 
-    if "ROLL_TEMPERATURE" in by_var.index:
-        row = by_var.loc["ROLL_TEMPERATURE"]
-        if pd.notna(row["NG - OK"]) and abs(row["SMD"]) >= 0.8:
-            parts.append("Roll Temperature differs strongly between OK and NG")
-
-    if "AFP_BOTTOM_MEAN" in by_var.index:
-        row = by_var.loc["AFP_BOTTOM_MEAN"]
-        if pd.notna(row["NG - OK"]) and abs(row["SMD"]) >= 0.8:
-            parts.append("Down AFP mean thickness differs strongly")
-
-    if "AFP_BOTTOM_RANGE" in by_var.index:
-        row = by_var.loc["AFP_BOTTOM_RANGE"]
-        if pd.notna(row["NG - OK"]) and abs(row["SMD"]) >= 0.8:
-            parts.append("Down AFP thickness uniformity differs strongly")
-
-    if parts:
+    if not upstream.empty and not intermediate.empty:
+        x_names = upstream.head(2)["Parameter"].tolist()
+        y_names = intermediate.head(2)["Parameter"].tolist()
         return (
-            "Current working hypothesis: "
-            + " -> ".join(parts)
-            + " -> higher risk of AFP peeling / powder shedding (掉粉) during deep drawing. "
-            "This is a screening hypothesis and must be verified."
+            "Current screening hypothesis: strong upstream difference(s) in "
+            + ", ".join(x_names)
+            + " are associated with coating-response difference(s) in "
+            + ", ".join(y_names)
+            + ". Verify this X -> coating Y relationship against peeling / powder shedding before calling it root cause."
         )
 
-    top = screening_df.dropna(subset=["|SMD|"]).head(3)["Parameter"].tolist()
-    if top:
+    if not upstream.empty:
+        names = upstream.head(3)["Parameter"].tolist()
         return (
-            "Current working hypothesis is not yet mechanism-specific. "
-            "The leading screening factors are: " + ", ".join(top) + "."
+            "Strong upstream screening signals are present in: "
+            + ", ".join(names)
+            + ". A corresponding coating-response mechanism has not yet been demonstrated."
         )
 
-    return "Insufficient data to construct a working hypothesis."
+    if not intermediate.empty:
+        names = intermediate.head(3)["Parameter"].tolist()
+        return (
+            "Strong coating-response differences are present in: "
+            + ", ".join(names)
+            + ". The upstream process/material driver has not yet been identified."
+        )
+
+    top = work.head(3)["Parameter"].tolist()
+    return (
+        "No mechanism-specific chain is established yet. Leading screening factors: "
+        + ", ".join(top)
+        + "."
+    )
 
 
 # ============================================================
@@ -664,107 +640,42 @@ def build_working_hypothesis(screening_df):
 # ============================================================
 
 
-def make_ok_ng_relative_difference_chart(screening_df, top_n=15):
+def make_signed_smd_chart(screening_df, top_n=15):
     """
-    Horizontal bar chart showing the direction and relative magnitude
-    of NG vs OK differences.
-
-    Relative Difference (%) = (NG Mean - OK Mean) / |OK Mean| * 100
-
-    Positive value: NG > OK
-    Negative value: NG < OK
-
-    Parameters with OK Mean close to zero are excluded because the
-    relative percentage would be unstable or misleading.
+    Signed SMD chart.
+    Positive SMD: NG mean > OK mean.
+    Negative SMD: NG mean < OK mean.
+    Absolute magnitude indicates standardized OK-NG separation strength.
     """
     if screening_df is None or screening_df.empty:
         return None
 
-    chart_df = screening_df.copy()
-
-    required = ["Parameter", "OK Mean", "NG Mean", "|SMD|"]
-    if any(c not in chart_df.columns for c in required):
-        return None
-
-    chart_df["OK Mean"] = pd.to_numeric(
-        chart_df["OK Mean"],
-        errors="coerce",
-    )
-    chart_df["NG Mean"] = pd.to_numeric(
-        chart_df["NG Mean"],
-        errors="coerce",
-    )
-    chart_df["|SMD|"] = pd.to_numeric(
-        chart_df["|SMD|"],
-        errors="coerce",
-    )
-
-    chart_df = chart_df.dropna(
-        subset=["OK Mean", "NG Mean", "|SMD|"]
-    ).copy()
-
-    # Avoid unstable division when OK Mean is zero or nearly zero.
-    chart_df = chart_df[
-        chart_df["OK Mean"].abs() > 1e-9
-    ].copy()
-
+    chart_df = screening_df.dropna(subset=["SMD"]).copy()
     if chart_df.empty:
         return None
 
-    chart_df["Relative Difference (%)"] = (
-        (chart_df["NG Mean"] - chart_df["OK Mean"])
-        / chart_df["OK Mean"].abs()
-        * 100
-    )
-
-    # Show the most statistically separated factors first.
     chart_df = (
         chart_df
-        .sort_values("|SMD|", ascending=False)
+        .assign(_abs=chart_df["SMD"].abs())
+        .sort_values("_abs", ascending=False)
         .head(top_n)
-        .sort_values("Relative Difference (%)", ascending=True)
+        .sort_values("SMD", ascending=True)
     )
-
-    if chart_df.empty:
-        return None
 
     fig, ax = plt.subplots(
-        figsize=(
-            8.8,
-            max(5.2, 0.42 * len(chart_df) + 1.4),
-        )
+        figsize=(8.8, max(5.2, 0.42 * len(chart_df) + 1.4))
     )
+    ax.barh(chart_df["Parameter"], chart_df["SMD"])
+    ax.axvline(0, linewidth=1)
+    ax.set_xlabel("Signed Standardized Mean Difference (SMD)")
+    ax.set_title("OK vs NG Direction and Separation (Signed SMD)", fontweight="bold")
+    ax.grid(axis="x", alpha=0.25)
 
-    ax.barh(
-        chart_df["Parameter"],
-        chart_df["Relative Difference (%)"],
-    )
-
-    ax.axvline(
-        0,
-        linewidth=1,
-    )
-
-    ax.set_xlabel(
-        "Relative Difference: (NG - OK) / |OK| × 100 (%)"
-    )
-    ax.set_title(
-        "OK vs NG Relative Difference (%)",
-        fontweight="bold",
-    )
-    ax.grid(
-        axis="x",
-        alpha=0.25,
-    )
-
-    # Add value labels for easier management reading.
-    for i, value in enumerate(chart_df["Relative Difference (%)"]):
-        if pd.isna(value):
-            continue
+    for i, value in enumerate(chart_df["SMD"]):
         offset = 3 if value >= 0 else -3
         ha = "left" if value >= 0 else "right"
         ax.annotate(
-            f"{value:+.1f}%",
+            f"{value:+.2f}",
             xy=(value, i),
             xytext=(offset, 0),
             textcoords="offset points",
@@ -775,151 +686,6 @@ def make_ok_ng_relative_difference_chart(screening_df, top_n=15):
 
     fig.tight_layout()
     return fig
-
-
-
-def make_process_trend_chart(
-    df,
-    variable,
-    quality_col,
-    date_col,
-):
-    """
-    True time-trend chart.
-
-    X-axis: PRODUCTION_DATE
-    Y-axis: selected numeric parameter
-    Separate daily mean lines for OK and NG.
-
-    The chart is intended to show drift, shifts, clustering,
-    and whether NG observations appear during a different
-    process period from OK observations.
-    """
-    required = [variable, quality_col, date_col]
-    if any(c not in df.columns for c in required):
-        return None
-
-    plot_df = df[[date_col, quality_col, variable]].copy()
-    plot_df[date_col] = pd.to_datetime(
-        plot_df[date_col],
-        errors="coerce",
-    )
-    plot_df[variable] = pd.to_numeric(
-        plot_df[variable],
-        errors="coerce",
-    )
-
-    plot_df = plot_df[
-        plot_df[quality_col].isin(["OK", "NG"])
-    ].dropna(
-        subset=[date_col, variable]
-    )
-
-    if plot_df.empty:
-        return None
-
-    daily = (
-        plot_df
-        .groupby(
-            [
-                pd.Grouper(key=date_col, freq="D"),
-                quality_col,
-            ],
-            observed=True,
-        )[variable]
-        .mean()
-        .reset_index()
-        .sort_values(date_col)
-    )
-
-    if daily.empty:
-        return None
-
-    fig, ax = plt.subplots(figsize=(8.8, 4.6))
-
-    plotted = False
-    for group_name in ["OK", "NG"]:
-        sub = daily[
-            daily[quality_col] == group_name
-        ].sort_values(date_col)
-
-        if sub.empty:
-            continue
-
-        ax.plot(
-            sub[date_col],
-            sub[variable],
-            marker="o",
-            linewidth=1.6,
-            label=group_name,
-        )
-        plotted = True
-
-    if not plotted:
-        plt.close(fig)
-        return None
-
-    ax.set_title(
-        f"{DISPLAY.get(variable, variable)} - Process Trend Over Time",
-        fontweight="bold",
-    )
-    ax.set_xlabel("Production Date")
-    ax.set_ylabel(DISPLAY.get(variable, variable))
-    ax.grid(axis="both", alpha=0.25)
-    ax.legend(title="Quality Class")
-
-    fig.autofmt_xdate()
-    fig.tight_layout()
-    return fig
-
-
-def get_trend_variables(
-    screening_df,
-    df,
-    date_col,
-    top_n=4,
-):
-    """
-    Select top screening factors that also have usable time-series data.
-    """
-    if (
-        screening_df is None
-        or screening_df.empty
-        or date_col not in df.columns
-    ):
-        return []
-
-    result = []
-
-    for variable in screening_df["Source Variable"].dropna().tolist():
-        if variable not in df.columns:
-            continue
-
-        tmp = pd.DataFrame({
-            "date": pd.to_datetime(
-                df[date_col],
-                errors="coerce",
-            ),
-            "value": pd.to_numeric(
-                df[variable],
-                errors="coerce",
-            ),
-        }).dropna()
-
-        if tmp.empty:
-            continue
-
-        # At least two distinct dates are needed for a meaningful trend.
-        if tmp["date"].dt.normalize().nunique() < 2:
-            continue
-
-        result.append(variable)
-
-        if len(result) >= top_n:
-            break
-
-    return result
-
 
 def make_smd_ranking_chart(screening_df, top_n=15):
     """
@@ -1267,66 +1033,22 @@ def generate_html_report(
         ],
     )
 
-    trend_chart_html = ""
+    signed_smd_chart_html = ""
     try:
-        trend_fig = make_ok_ng_relative_difference_chart(
+        signed_smd_fig = make_signed_smd_chart(
             screening_df,
             top_n=15,
         )
-        if trend_fig is not None:
-            trend_encoded = figure_to_base64(trend_fig)
-            trend_chart_html = (
+        if signed_smd_fig is not None:
+            signed_smd_encoded = figure_to_base64(signed_smd_fig)
+            signed_smd_chart_html = (
                 '<div class="chart-card">'
-                f'<img src="data:image/png;base64,{trend_encoded}" '
-                'alt="OK vs NG Relative Difference (%)">'
+                f'<img src="data:image/png;base64,{signed_smd_encoded}" '
+                'alt="OK vs NG Direction and Separation (Signed SMD)">'
                 '</div>'
             )
     except Exception:
-        trend_chart_html = ""
-
-    time_trend_chart_html = ""
-
-    try:
-        trend_variables = get_trend_variables(
-            screening_df,
-            df,
-            date_col,
-            top_n=4,
-        )
-
-        trend_blocks = []
-
-        for variable in trend_variables:
-            fig = make_process_trend_chart(
-                df,
-                variable,
-                quality_col,
-                date_col,
-            )
-
-            if fig is None:
-                continue
-
-            encoded = figure_to_base64(fig)
-
-            trend_blocks.append(
-                f"""
-                <div class="chart-card">
-                    <img src="data:image/png;base64,{encoded}"
-                         alt="{html_lib.escape(DISPLAY.get(variable, variable))} Process Trend">
-                </div>
-                """
-            )
-
-        if trend_blocks:
-            time_trend_chart_html = (
-                '<div class="chart-grid">'
-                + "".join(trend_blocks)
-                + "</div>"
-            )
-
-    except Exception:
-        time_trend_chart_html = ""
+        signed_smd_chart_html = ""
 
     smd_chart_html = ""
     try:
@@ -1467,45 +1189,39 @@ p &lt; 0.05 supports a statistical OK-NG difference. |SMD| indicates the size of
 These results do not prove root cause.
 </p>
 
-<h2>4. OK vs NG Relative Difference (%)</h2>
-{trend_chart_html if trend_chart_html else "<p>No trend chart available.</p>"}
+<h2>4. OK vs NG Direction and Separation (Signed SMD)</h2>
+{signed_smd_chart_html if signed_smd_chart_html else "<p>No trend chart available.</p>"}
 <p class="note">
-Positive values mean NG &gt; OK; negative values mean NG &lt; OK.
-Relative Difference (%) = (NG Mean - OK Mean) / |OK Mean| × 100.
+Positive SMD means NG &gt; OK; negative SMD means NG &lt; OK.
+The absolute magnitude indicates standardized OK-NG separation strength.
 </p>
 
-<h2>5. Process Trend Over Time</h2>
-{time_trend_chart_html if time_trend_chart_html else "<p>No multi-date trend data available.</p>"}
-<p class="note">
-X-axis = PRODUCTION_DATE. Each chart shows separate OK and NG daily means to identify
-process drift, shifts, and periods where NG observations cluster.
-</p>
 
-<h2>6. OK vs NG Screening Priority</h2>
+<h2>5. OK vs NG Screening Priority</h2>
 {smd_chart_html if smd_chart_html else "<p>No screening chart available.</p>"}
 <p class="note">
 This chart ranks variables by |SMD|. A longer bar means stronger OK-NG separation,
 but it does not identify root cause or direction.
 </p>
 
-<h2>7. Top Factor Boxplots - OK vs NG Distribution</h2>
+<h2>6. Top Factor Boxplots - OK vs NG Distribution</h2>
 {chart_html if chart_html else "<p>No chart available.</p>"}
 <p class="note">
 Boxplots show the actual distribution of OK and NG values. Greater separation and less overlap
 support a stronger screening signal; overlap means the factor alone may not explain all NG cases.
 </p>
 
-<h2>8. Mechanical Properties</h2>
+<h2>7. Supporting Analysis - Mechanical Properties</h2>
 {mechanical_table}
 <div class="summary-box">{html_lib.escape(mechanical_conclusion)}</div>
 
-<h2>9. Representative Surface QC</h2>
+<h2>8. Supporting Analysis - Surface QC</h2>
 {order_table}
 <p class="note">
 If one representative coil is used for the complete order, these results are descriptive at ORDER level.
 </p>
 
-<h2>10. Recommended Next Actions</h2>
+<h2>9. Recommended Next Actions</h2>
 <ol>
 <li>Collect additional independent OK and NG orders.</li>
 <li>Verify the top 2-3 screening factors with matched samples or a controlled trial.</li>
@@ -1513,10 +1229,6 @@ If one representative coil is used for the complete order, these results are des
 <li>After verification, establish process control limits and a reaction plan.</li>
 </ol>
 
-<p class="note">
-AFP膜厚(um): 1.07/1.20 means Up = 1.07 µm and Down = 1.20 µm.
-Total two-side AFP thickness = Up + Down.
-</p>
 
 </div>
 </body>
@@ -1696,33 +1408,33 @@ def generate_word_report(
         run.font.size = Pt(8)
 
 
-    doc.add_heading("4. OK vs NG Relative Difference (%)", level=1)
+    doc.add_heading("4. OK vs NG Direction and Separation (Signed SMD)", level=1)
 
     try:
-        trend_fig = make_ok_ng_relative_difference_chart(
+        signed_smd_fig = make_signed_smd_chart(
             screening_df,
             top_n=15,
         )
 
-        if trend_fig is not None:
-            trend_buffer = io.BytesIO()
-            trend_fig.savefig(
-                trend_buffer,
+        if signed_smd_fig is not None:
+            signed_smd_buffer = io.BytesIO()
+            signed_smd_fig.savefig(
+                signed_smd_buffer,
                 format="png",
                 dpi=160,
                 bbox_inches="tight",
             )
-            plt.close(trend_fig)
-            trend_buffer.seek(0)
+            plt.close(signed_smd_fig)
+            signed_smd_buffer.seek(0)
 
             doc.add_picture(
-                trend_buffer,
+                signed_smd_buffer,
                 width=Inches(6.8),
             )
 
             p = doc.add_paragraph(
-                "Positive values mean NG > OK; negative values mean NG < OK. "
-                "Relative Difference (%) = (NG Mean - OK Mean) / |OK Mean| × 100."
+                "Positive SMD means NG > OK; negative SMD means NG < OK. "
+                "The absolute magnitude indicates standardized separation strength."
             )
             for run in p.runs:
                 run.italic = True
@@ -1732,61 +1444,7 @@ def generate_word_report(
             "OK vs NG relative difference chart could not be generated."
         )
 
-    doc.add_heading("5. Process Trend Over Time", level=1)
-
-    try:
-        trend_variables = get_trend_variables(
-            screening_df,
-            df,
-            date_col,
-            top_n=4,
-        )
-
-        if not trend_variables:
-            doc.add_paragraph(
-                "No parameter has sufficient multi-date data for a time trend."
-            )
-        else:
-            for variable in trend_variables:
-                fig = make_process_trend_chart(
-                    df,
-                    variable,
-                    quality_col,
-                    date_col,
-                )
-
-                if fig is None:
-                    continue
-
-                trend_buffer = io.BytesIO()
-                fig.savefig(
-                    trend_buffer,
-                    format="png",
-                    dpi=160,
-                    bbox_inches="tight",
-                )
-                plt.close(fig)
-                trend_buffer.seek(0)
-
-                doc.add_picture(
-                    trend_buffer,
-                    width=Inches(6.6),
-                )
-
-            p = doc.add_paragraph(
-                "X-axis = PRODUCTION_DATE. Separate OK and NG daily means "
-                "show process drift, shifts, and periods where NG observations cluster."
-            )
-            for run in p.runs:
-                run.italic = True
-                run.font.size = Pt(8)
-
-    except Exception as exc:
-        doc.add_paragraph(
-            f"Process trend charts could not be generated: {exc}"
-        )
-
-    doc.add_heading("6. OK vs NG Screening Priority", level=1)
+    doc.add_heading("5. OK vs NG Screening Priority", level=1)
 
     try:
         smd_fig = make_smd_ranking_chart(
@@ -1823,7 +1481,7 @@ def generate_word_report(
             "Screening ranking chart could not be generated."
         )
 
-    doc.add_heading("7. Top Factor Boxplots - OK vs NG Distribution", level=1)
+    doc.add_heading("6. Top Factor Boxplots - OK vs NG Distribution", level=1)
 
     try:
         top_box_vars = (
@@ -1878,7 +1536,7 @@ def generate_word_report(
             f"Boxplots could not be generated: {exc}"
         )
 
-    doc.add_heading("8. Mechanical Properties", level=1)
+    doc.add_heading("7. Supporting Analysis - Mechanical Properties", level=1)
     _add_word_table(
         doc,
         mechanical_summary_df,
@@ -1893,7 +1551,7 @@ def generate_word_report(
     )
     doc.add_paragraph(mechanical_conclusion)
 
-    doc.add_heading("9. Representative Surface QC", level=1)
+    doc.add_heading("8. Supporting Analysis - Surface QC", level=1)
     _add_word_table(
         doc,
         order_summary_df,
@@ -1907,7 +1565,7 @@ def generate_word_report(
         ],
     )
 
-    doc.add_heading("10. Recommended Next Actions", level=1)
+    doc.add_heading("9. Recommended Next Actions", level=1)
     actions = [
         "Collect additional independent OK and NG orders.",
         "Verify the top 2-3 screening factors with matched samples or a controlled trial.",
@@ -1916,14 +1574,6 @@ def generate_word_report(
     ]
     for action in actions:
         doc.add_paragraph(action, style="List Bullet")
-
-    p = doc.add_paragraph()
-    r = p.add_run(
-        "AFP thickness note: AFP膜厚(um) 1.07/1.20 means "
-        "Up = 1.07 µm and Down = 1.20 µm; Total = Up + Down."
-    )
-    r.italic = True
-    r.font.size = Pt(8)
 
     buffer = io.BytesIO()
     doc.save(buffer)
@@ -2052,37 +1702,6 @@ if top_afp_cols:
 if bottom_afp_cols:
     df["AFP_BOTTOM_MEAN"] = numeric_mean(df, bottom_afp_cols)
     df["AFP_BOTTOM_RANGE"] = numeric_range(df, bottom_afp_cols)
-
-all_afp_cols = top_afp_cols + bottom_afp_cols
-
-if all_afp_cols:
-    df["AFP_OVERALL_MEAN"] = numeric_mean(df, all_afp_cols)
-    df["AFP_OVERALL_RANGE"] = numeric_range(df, all_afp_cols)
-
-    afp_matrix = df[all_afp_cols].apply(pd.to_numeric, errors="coerce")
-    afp_sd = afp_matrix.std(axis=1, ddof=1)
-    afp_mean = afp_matrix.mean(axis=1)
-
-    df["AFP_OVERALL_CV"] = np.where(
-        afp_mean.abs() > 1e-12,
-        afp_sd / afp_mean.abs() * 100,
-        np.nan,
-    )
-
-if COL["afp_recheck"] in df.columns:
-    parsed_afp = df[COL["afp_recheck"]].map(parse_afp_top_bottom)
-
-    df["AFP_RECHECK_TOP"] = parsed_afp.map(
-        lambda x: x[0] if isinstance(x, tuple) else np.nan
-    )
-    df["AFP_RECHECK_BOTTOM"] = parsed_afp.map(
-        lambda x: x[1] if isinstance(x, tuple) else np.nan
-    )
-
-    df["AFP_RECHECK_TOTAL"] = (
-        pd.to_numeric(df["AFP_RECHECK_TOP"], errors="coerce")
-        + pd.to_numeric(df["AFP_RECHECK_BOTTOM"], errors="coerce")
-    )
 
 
 # Metal coating thickness
@@ -2745,62 +2364,20 @@ with tabs[5]:
     else:
         st.info(build_working_hypothesis(screening))
 
-        st.markdown("#### OK vs NG Relative Difference (%)")
-        trend_fig = make_ok_ng_relative_difference_chart(
+        st.markdown("#### OK vs NG Direction and Separation (Signed SMD)")
+        signed_smd_fig = make_signed_smd_chart(
             screening,
             top_n=15,
         )
-        if trend_fig is not None:
+        if signed_smd_fig is not None:
             st.pyplot(
                 trend_fig,
                 use_container_width=True,
             )
         st.caption(
-            "Positive values mean NG > OK; negative values mean NG < OK. "
-            "This chart shows direction and relative magnitude, while |SMD| shows separation strength."
+            "Positive SMD means NG > OK; negative SMD means NG < OK. "
+            "The absolute magnitude shows standardized separation strength."
         )
-
-
-        st.markdown("#### Process Trend Over Time")
-
-        trend_candidates = get_trend_variables(
-            screening,
-            df,
-            date_col,
-            top_n=8,
-        )
-
-        if trend_candidates:
-            selected_trend_variable = st.selectbox(
-                "Trend parameter",
-                options=trend_candidates,
-                format_func=lambda x: DISPLAY.get(x, x),
-                key="root_cause_time_trend_parameter",
-            )
-
-            process_trend_fig = make_process_trend_chart(
-                df,
-                selected_trend_variable,
-                quality_col,
-                date_col,
-            )
-
-            if process_trend_fig is not None:
-                st.pyplot(
-                    process_trend_fig,
-                    use_container_width=True,
-                )
-
-            st.caption(
-                "X-axis is PRODUCTION_DATE. Separate OK and NG lines show "
-                "whether the parameter shifts or drifts over time and whether NG "
-                "clusters in a different process period."
-            )
-        else:
-            st.info(
-                "At least two production dates with valid numeric data are required "
-                "to generate a time-trend chart."
-            )
         screening["Screening Priority"] = pd.cut(
             screening["|SMD|"],
             bins=[
@@ -2881,108 +2458,10 @@ with tabs[5]:
                 use_container_width=True,
             )
 
-    st.markdown("#### Exploratory multivariable model")
-
-    model_variables = numeric_variables_available(
-        df,
-        screening_variables,
-        min_count=3,
+    st.caption(
+        "Multivariable machine-learning ranking is intentionally disabled at the current sample size. "
+        "Use additional independent OK/NG orders before multivariable modeling."
     )
-
-    if (
-        SKLEARN_AVAILABLE
-        and len(model_variables) >= 2
-        and len(df) >= 20
-        and df[quality_col].nunique() == 2
-    ):
-        model_df = df[
-            [quality_col] + model_variables
-        ].copy()
-
-        y = (
-            model_df[quality_col] == "NG"
-        ).astype(int)
-
-        X = model_df[
-            model_variables
-        ].apply(
-            pd.to_numeric,
-            errors="coerce",
-        )
-
-        # Remove completely empty or constant predictors.
-        usable = [
-            c
-            for c in X.columns
-            if X[c].notna().sum() >= 3
-            and X[c].nunique(dropna=True) > 1
-        ]
-
-        X = X[usable]
-
-        if len(usable) >= 2:
-            for c in X.columns:
-                median = X[c].median()
-                X[c] = X[c].fillna(median)
-
-            model = RandomForestClassifier(
-                n_estimators=500,
-                random_state=42,
-                class_weight="balanced",
-                min_samples_leaf=max(
-                    2,
-                    int(len(X) * 0.02),
-                ),
-            )
-
-            model.fit(X, y)
-
-            probability = model.predict_proba(X)[:, 1]
-
-            try:
-                auc = roc_auc_score(
-                    y,
-                    probability,
-                )
-            except Exception:
-                auc = np.nan
-
-            importance = pd.DataFrame(
-                {
-                    "Parameter": [
-                        DISPLAY.get(c, c)
-                        for c in X.columns
-                    ],
-                    "Random Forest Importance":
-                        model.feature_importances_,
-                }
-            ).sort_values(
-                "Random Forest Importance",
-                ascending=False,
-            )
-
-            if pd.notna(auc):
-                st.metric(
-                    "In-sample Random Forest AUC",
-                    f"{auc:.3f}",
-                )
-
-            st.dataframe(
-                importance.head(15),
-                hide_index=True,
-                use_container_width=True,
-            )
-
-            st.caption(
-                "Random Forest importance is exploratory only. "
-                "It can rank variables associated with NG but cannot "
-                "establish causation."
-            )
-    else:
-        st.caption(
-            "The multivariable model requires scikit-learn, "
-            "at least two usable predictors and sufficient OK/NG rows."
-        )
 
     st.markdown("#### Root-cause logic")
 
@@ -3124,55 +2603,23 @@ with tabs[7]:
     )
 
     if not report_screening.empty:
-        st.markdown("#### OK vs NG Relative Difference (%)")
+        st.markdown("#### OK vs NG Direction and Separation (Signed SMD)")
 
-        report_trend_fig = make_ok_ng_relative_difference_chart(
+        report_signed_smd_fig = make_signed_smd_chart(
             report_screening,
             top_n=15,
         )
 
-        if report_trend_fig is not None:
+        if report_signed_smd_fig is not None:
             st.pyplot(
-                report_trend_fig,
+                report_signed_smd_fig,
                 use_container_width=True,
             )
 
         st.caption(
-            "Positive values mean NG > OK; negative values mean NG < OK. "
-            "Relative difference is used only to show direction and magnitude."
+            "Positive SMD means NG > OK; negative SMD means NG < OK. "
+            "The absolute magnitude shows standardized separation strength."
         )
-
-
-        st.markdown("#### Process Trend Over Time")
-
-        report_trend_variables = get_trend_variables(
-            report_screening,
-            df,
-            date_col,
-            top_n=4,
-        )
-
-        if report_trend_variables:
-            for variable in report_trend_variables:
-                fig = make_process_trend_chart(
-                    df,
-                    variable,
-                    quality_col,
-                    date_col,
-                )
-                if fig is not None:
-                    st.pyplot(
-                        fig,
-                        use_container_width=True,
-                    )
-
-            st.caption(
-                "Time-trend charts use PRODUCTION_DATE and show separate OK and NG daily means."
-            )
-        else:
-            st.info(
-                "No parameter has sufficient multi-date data for a time trend."
-            )
 
         st.markdown("#### OK vs NG Screening Priority")
 
@@ -3290,28 +2737,13 @@ with tabs[7]:
         )
 
     st.caption(
-        "Both reports use the current dashboard filters and contain the same concise analysis results."
+        "Both reports use the current dashboard filters. Time-trend charts are intentionally excluded."
     )
 
 
 # ============================================================
 # DATA DICTIONARY
 # ============================================================
-with st.expander("AFP Thickness Source Check", expanded=False):
-    if COL["afp_recheck"] in df.columns:
-        preview_cols = [COL["afp_recheck"]]
-        for c in ["AFP_RECHECK_TOP", "AFP_RECHECK_BOTTOM", "AFP_RECHECK_TOTAL"]:
-            if c in df.columns:
-                preview_cols.append(c)
-
-        st.write(
-            "Use this table to verify that AFP膜厚(um) is being parsed correctly as Top / Bottom."
-        )
-        st.dataframe(
-            df[preview_cols].head(20),
-            use_container_width=True,
-        )
-
 with st.expander("Data Dictionary", expanded=False):
     dictionary = pd.DataFrame(
         [
@@ -3321,14 +2753,13 @@ with st.expander("Data Dictionary", expanded=False):
             ["ORDER_NUMBER", "Raw", "Customer / production order number"],
             ["OVEN_TEMPERATURE", "Raw", "Drying oven temperature"],
             ["ROLL_TEMPERATURE", "Raw", "Temperature of the coating / treatment roll"],
-            ["AFP Top Film Thickness - 3 Point Mean", "Derived", "Average of North, Center and South AFP thickness on the up side"],
-            ["AFP Bottom Film Thickness - 3 Point Mean", "Derived", "Average of North, Center and South AFP thickness on the down side"],
-            ["", "Derived", "Average of all available AFP thickness points on both sides"],
+            ["AFP Up Film Thickness Mean (N-C-S)", "Derived", "Average of North, Center and South AFP thickness on the up side"],
+            ["AFP Down Film Thickness Mean (N-C-S)", "Derived", "Average of North, Center and South AFP thickness on the down side"],
             ["AFP Recheck Up Thickness", "Reference only", "First value in AFP膜厚(um); e.g. 1.07/1.20 -> Up = 1.07 µm"],
             ["AFP Recheck Down Thickness", "Reference only", "Second value in AFP膜厚(um); e.g. 1.07/1.20 -> Down = 1.20 µm"],
             ["AFP Recheck Total Two-Side Thickness", "Reference only", "Up plus Down AFP recheck thickness; e.g. 1.07 + 1.20 = 2.27 µm"],
-            ["Metal Coating Thickness - Top Mean", "Derived", "Mean of XRAY up-side North, Center and South"],
-            ["Metal Coating Thickness - Bottom Mean", "Derived", "Mean of XRAY down-side North, Center and South"],
+            ["Metal Coating Thickness - Up Mean", "Derived", "Mean of XRAY up-side North, Center and South"],
+            ["Metal Coating Thickness - Down Mean", "Derived", "Mean of XRAY down-side North, Center and South"],
             ["Metal Coating Thickness - Total", "Derived", "Up mean plus Down mean"],
             ["Steel Hardness Mean", "Derived", "Mean of North and South steel hardness"],
             ["Yield Strength", "Raw / renamed", "TENSILE_YIELD_RAW"],
