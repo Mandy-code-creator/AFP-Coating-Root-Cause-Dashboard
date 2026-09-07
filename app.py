@@ -34,7 +34,7 @@ st.set_page_config(
 st.title("AFP Coating - OK vs NG Root Cause Dashboard")
 st.caption(
     "Objective: identify the factors associated with anti-fingerprint coating "
-    "peeling and white powder after customer deep-drawing / forming."
+    "peeling, powder shedding (掉粉) and white powder after customer deep-drawing / forming."
 )
 
 
@@ -330,6 +330,18 @@ def build_summary(df, variables, quality_col):
     out = pd.DataFrame(rows)
 
     if not out.empty:
+        out["Factor Role"] = out["Source Variable"].map(factor_role)
+        out["Technical Interpretation"] = out.apply(
+            lambda r: technical_interpretation(
+                r["Source Variable"],
+                r["OK Mean"],
+                r["NG Mean"],
+                r["SMD"],
+                r["Mann-Whitney p"],
+            ),
+            axis=1,
+        )
+
         out = out.sort_values(
             by=["|SMD|", "Parameter"],
             ascending=[False, True],
@@ -432,6 +444,180 @@ def prepare_order_level_data(df, order_col, quality_col, qc_columns):
 
     return order_qc.join(order_quality).reset_index()
 
+
+
+
+def factor_role(variable):
+    """
+    Classify variables into causal hierarchy for interpretation.
+    """
+    upstream = {
+        "OVEN_TEMPERATURE",
+        "ROLL_TEMPERATURE",
+        "XRAY_TOP_MEAN",
+        "XRAY_BOTTOM_MEAN",
+        "XRAY_TOTAL",
+        "XRAY_SIDE_DIFFERENCE",
+        "HARDNESS_MEAN",
+        "HARDNESS_DIFFERENCE",
+        "YS",
+        "TS",
+        "EL",
+    }
+
+    intermediate = {
+        "AFP_TOP_MEAN",
+        "AFP_BOTTOM_MEAN",
+        "AFP_OVERALL_MEAN",
+        "AFP_RECHECK_MEAN",
+        "AFP_TOP_RANGE",
+        "AFP_BOTTOM_RANGE",
+        "AFP_OVERALL_RANGE",
+        "AFP_OVERALL_CV",
+        "滑度",
+        "附著性",
+        "耐磨性",
+        "粗糙度(Ra)",
+    }
+
+    if variable in upstream:
+        return "Upstream X"
+    if variable in intermediate:
+        return "Intermediate Y"
+    return "Screening Variable"
+
+
+def technical_interpretation(variable, ok_mean, ng_mean, smd, p_value):
+    """
+    Short management-oriented interpretation.
+    Descriptive only; not a causal claim.
+    """
+    if pd.isna(ok_mean) or pd.isna(ng_mean):
+        return "Insufficient data"
+
+    diff = ng_mean - ok_mean
+    direction = "higher" if diff > 0 else "lower"
+
+    if variable == "ROLL_TEMPERATURE":
+        return f"NG roll temperature is {direction}; candidate upstream coating-process factor."
+    if variable == "OVEN_TEMPERATURE":
+        return f"NG oven temperature is {direction}; possible drying / film-formation factor."
+    if variable == "AFP_BOTTOM_MEAN":
+        return f"NG bottom AFP thickness is {direction}; intermediate coating-performance response."
+    if variable == "AFP_BOTTOM_RANGE":
+        return f"NG bottom-side thickness variation is {direction}; strong film-uniformity signal."
+    if variable == "AFP_OVERALL_MEAN":
+        return f"NG overall AFP thickness is {direction}; intermediate coating-response signal."
+    if variable == "AFP_RECHECK_MEAN":
+        return f"NG recheck AFP thickness is {direction}; supports thickness-related investigation."
+    if variable in {"AFP_TOP_RANGE", "AFP_OVERALL_RANGE", "AFP_OVERALL_CV"}:
+        return f"NG film-uniformity metric is {direction}; evaluate together with coating-process conditions."
+    if variable == "HARDNESS_MEAN":
+        return f"NG steel hardness is {direction}; mechanical difference, but not direct AFP adhesion evidence."
+    if variable == "EL":
+        return f"NG elongation is {direction}; interpret as formability support factor, not direct AFP cause."
+    if variable in {"YS", "TS"}:
+        return f"NG mechanical strength is {direction}; supporting formability factor only."
+    if variable == "粗糙度(Ra)":
+        return f"NG roughness is {direction}; surface-condition candidate, but current replication is limited."
+    if variable == "滑度":
+        return f"NG slip/COF is {direction}; friction candidate, but current replication is limited."
+    if variable == "附著性":
+        return "AFP adhesion is directly relevant to peeling; treat as a key confirmation response."
+    if variable == "耐磨性":
+        return "AFP wear resistance is directly relevant to powder shedding (掉粉); treat as a key confirmation response."
+
+    if pd.notna(smd) and abs(smd) >= 0.8:
+        return "Large OK-NG separation; verify technical mechanism before causal interpretation."
+    if pd.notna(p_value) and p_value < 0.05:
+        return "Statistically different, but technical mechanism must still be verified."
+    return "Limited OK-NG separation in current data."
+
+
+def order_level_limitation_text(df, order_col, quality_col):
+    """
+    Explain independence limitation based on number of orders.
+    """
+    if order_col not in df.columns:
+        return "ORDER_NUMBER is unavailable, so order-level independence cannot be assessed."
+
+    order_quality = (
+        df[[order_col, quality_col]]
+        .dropna(subset=[order_col, quality_col])
+        .drop_duplicates()
+    )
+
+    if order_quality.empty:
+        return "No usable order-level quality data are available."
+
+    # One order may contain mixed classifications; count unique orders by whether NG appears.
+    grouped = (
+        df.groupby(order_col)[quality_col]
+        .apply(lambda s: "NG" if (s == "NG").any() else ("OK" if (s == "OK").any() else np.nan))
+        .dropna()
+    )
+
+    ok_orders = int((grouped == "OK").sum())
+    ng_orders = int((grouped == "NG").sum())
+    total_orders = int(grouped.shape[0])
+
+    if total_orders <= 2 or ok_orders < 2 or ng_orders < 2:
+        return (
+            f"Major limitation: current analysis contains only {total_orders} independent orders "
+            f"({ok_orders} OK, {ng_orders} NG). Coil-level statistical significance may reflect "
+            f"order-level differences. Root cause cannot be confirmed until additional independent "
+            f"OK and NG orders are collected."
+        )
+
+    return (
+        f"Current analysis contains {total_orders} independent orders "
+        f"({ok_orders} OK, {ng_orders} NG). Order-level replication is available, "
+        f"but causal confirmation is still required."
+    )
+
+
+def build_working_hypothesis(screening_df):
+    """
+    Build a concise current working hypothesis from available results.
+    """
+    if screening_df is None or screening_df.empty:
+        return "Insufficient data to construct a working hypothesis."
+
+    by_var = screening_df.set_index("Source Variable", drop=False)
+
+    parts = []
+
+    if "ROLL_TEMPERATURE" in by_var.index:
+        row = by_var.loc["ROLL_TEMPERATURE"]
+        if pd.notna(row["NG - OK"]) and abs(row["SMD"]) >= 0.8:
+            parts.append("Roll Temperature differs strongly between OK and NG")
+
+    if "AFP_BOTTOM_MEAN" in by_var.index:
+        row = by_var.loc["AFP_BOTTOM_MEAN"]
+        if pd.notna(row["NG - OK"]) and abs(row["SMD"]) >= 0.8:
+            parts.append("Bottom AFP mean thickness differs strongly")
+
+    if "AFP_BOTTOM_RANGE" in by_var.index:
+        row = by_var.loc["AFP_BOTTOM_RANGE"]
+        if pd.notna(row["NG - OK"]) and abs(row["SMD"]) >= 0.8:
+            parts.append("Bottom AFP thickness uniformity differs strongly")
+
+    if parts:
+        return (
+            "Current working hypothesis: "
+            + " -> ".join(parts)
+            + " -> higher risk of AFP peeling / powder shedding (掉粉) during deep drawing. "
+            "This is a screening hypothesis and must be verified."
+        )
+
+    top = screening_df.dropna(subset=["|SMD|"]).head(3)["Parameter"].tolist()
+    if top:
+        return (
+            "Current working hypothesis is not yet mechanism-specific. "
+            "The leading screening factors are: " + ", ".join(top) + "."
+        )
+
+    return "Insufficient data to construct a working hypothesis."
 
 
 # ============================================================
@@ -577,6 +763,8 @@ def generate_html_report(
         date_text = "Not available"
 
     conclusion_lines = build_executive_conclusion(screening_df)
+    limitation_text = order_level_limitation_text(df, order_col, quality_col)
+    working_hypothesis = build_working_hypothesis(screening_df)
 
     # Top screening table
     if screening_df is not None and not screening_df.empty:
@@ -704,6 +892,20 @@ def generate_html_report(
         "They can change the strain and forming load transferred to the AFP coating, but they do not directly measure AFP adhesion."
     )
 
+    try:
+        mech_idx = mechanical_summary_df.set_index("Source Variable")
+        if "HARDNESS_MEAN" in mech_idx.index and "EL" in mech_idx.index:
+            hdiff = mech_idx.loc["HARDNESS_MEAN", "NG - OK"]
+            ediff = mech_idx.loc["EL", "NG - OK"]
+            if pd.notna(hdiff) and pd.notna(ediff) and hdiff < 0 and ediff > 0:
+                mechanical_lines.append(
+                    "Current direction shows lower hardness and higher elongation in NG. "
+                    "This does not clearly indicate poorer formability in NG; therefore mechanical properties "
+                    "are not the leading hypothesis at this stage."
+                )
+    except Exception:
+        pass
+
     mechanical_lines.append(
         "r-value and n-value are not included unless corresponding source columns are available in the uploaded dataset."
     )
@@ -717,6 +919,7 @@ def generate_html_report(
         top_screening,
         columns=[
             "Parameter",
+            "Factor Role",
             "OK n",
             "OK Mean",
             "NG n",
@@ -726,6 +929,7 @@ def generate_html_report(
             "|SMD|",
             "Mann-Whitney p",
             "Screening Result",
+            "Technical Interpretation",
         ],
     )
 
@@ -854,7 +1058,7 @@ def generate_html_report(
 
 <h1>{report_title}</h1>
 <div class="subtitle">
-Problem: AFP coating peeling / white powder after customer deep drawing or forming.
+Problem: AFP coating peeling / powder shedding (掉粉) / white powder after customer deep drawing or forming.
 </div>
 
 <h2>1. Analysis Scope</h2>
@@ -888,6 +1092,16 @@ Problem: AFP coating peeling / white powder after customer deep drawing or formi
 </ul>
 </div>
 
+<div class="action-box" style="margin-top:14px;">
+<strong>Data Limitation</strong><br>
+{html_lib.escape(limitation_text)}
+</div>
+
+<div class="action-box" style="margin-top:14px;">
+<strong>Current Working Hypothesis</strong><br>
+{html_lib.escape(working_hypothesis)}
+</div>
+
 <h2>3. What This Analysis Achieved</h2>
 <ul>
     <li>Quantified the differences between OK and NG coils instead of relying only on visual judgement.</li>
@@ -895,6 +1109,7 @@ Problem: AFP coating peeling / white powder after customer deep drawing or formi
     <li>Separated high-priority candidate factors from variables showing little difference.</li>
     <li>Kept representative surface-QC measurements at ORDER level to avoid pseudo-replication.</li>
     <li>Created a shortlist of factors that should be verified before establishing process control limits.</li>
+<li>Separately recognizes peeling, cracking and powder shedding (掉粉) as customer-forming failure modes.</li>
 </ul>
 
 <h2>4. Candidate Factor Ranking</h2>
@@ -927,26 +1142,42 @@ A difference in YS, TS, EL or hardness may increase or reduce the forming demand
 but a mechanical-property difference alone does not prove that it caused AFP peeling.
 </p>
 
-<h2>8. Root-Cause Logic</h2>
+<h2>8. Customer Failure Mode Interpretation</h2>
+<table class="report-table">
+<tr><th>Failure Mode</th><th>Meaning</th><th>Recommended Evaluation</th></tr>
+<tr><td>Peeling</td><td>AFP layer separates from the coated steel surface.</td><td>Adhesion, film thickness, PMT, surface condition, forming severity.</td></tr>
+<tr><td>Powder Shedding (掉粉)</td><td>AFP layer generates white powder / loose residue during or after forming.</td><td>Wear resistance, adhesion, film uniformity, PMT, roughness, forming friction and repeated rubbing.</td></tr>
+<tr><td>Cracking</td><td>AFP layer cracks under local tensile strain during deep drawing.</td><td>Elongation, hardness, substrate formability, film flexibility and local strain.</td></tr>
+</table>
+<p class="note">
+Powder shedding (掉粉) should be treated as a separate response variable because its mechanism may differ from simple peeling.
+</p>
+
+<h2>9. Root-Cause Logic</h2>
 <div class="action-box">
-<strong>Process / Material Factors</strong>
-&rarr; AFP film thickness and uniformity
-&rarr; surface / adhesion / wear behavior
-&rarr; peeling or white powder after deep drawing.
+<strong>Level 1 - Upstream Process / Material X</strong><br>
+Roll temperature, oven temperature, metallic coating condition, steel mechanical properties
 <br><br>
-<strong>Mechanical / Formability Factors</strong>
-&rarr; substrate deformation behavior and forming load
-&rarr; strain transferred to AFP coating
-&rarr; risk of cracking / peeling during deep drawing.
+&darr;
+<br><br>
+<strong>Level 2 - Intermediate Coating Response Y</strong><br>
+AFP mean thickness, thickness uniformity, adhesion, wear resistance, roughness / friction
+<br><br>
+&darr;
+<br><br>
+<strong>Level 3 - Customer Failure Y</strong><br>
+Peeling / powder shedding (掉粉) / cracking after deep drawing
 </div>
 
-<h2>9. Recommended Next Step</h2>
+<h2>10. Recommended Next Step</h2>
 <ol>
-    <li>Select the top 2-3 candidate factors from the screening table.</li>
-    <li>Confirm that OK and NG samples are comparable by product specification, order condition and customer forming condition.</li>
-    <li>Collect additional matched coils if the current sample size is small or unbalanced.</li>
-    <li>Verify the suspected factors through a controlled process trial or DOE.</li>
-    <li>Only after verification, establish production control limits and a reaction plan.</li>
+    <li>Collect additional independent OK and NG orders. Adding more coils from the same two orders does not solve the independence limitation.</li>
+    <li>Prioritize verification of the current coating-process chain: Roll Temperature -> Bottom AFP Thickness / Uniformity -> customer forming failure.</li>
+    <li>Measure peeling and powder shedding (掉粉) as separate quantitative responses after reproducing the customer deep-drawing condition.</li>
+    <li>For 掉粉, record powder / residue amount or a defined severity grade rather than only OK / NG.</li>
+    <li>Obtain or strengthen direct AFP responses: adhesion, wear resistance, coating weight / film weight, and PMT if available.</li>
+    <li>Use a controlled process trial or DOE only after the candidate factors are narrowed to 2-3 technically plausible X variables.</li>
+    <li>After causal verification, establish control limits, inspection frequency and a reaction plan.</li>
 </ol>
 
 <p class="note">
@@ -1584,6 +1815,13 @@ with tabs[3]:
         "incorrectly counted as multiple independent coil measurements."
     )
 
+    if not order_df.empty and len(order_df) <= 2:
+        st.warning(
+            "Insufficient replication: current representative Surface QC contains only "
+            f"{len(order_df)} independent order-level observations. "
+            "These values are descriptive only and should not be used for statistical root-cause confirmation."
+        )
+
     if order_df.empty:
         st.warning(
             "No order-level surface QC data was found."
@@ -1720,6 +1958,8 @@ with tabs[5]:
         "be verified by process review, controlled trial or DOE."
     )
 
+    st.error(order_level_limitation_text(df, order_col, quality_col))
+
     screening_variables = (
         process_variables
         + main_afp_variables
@@ -1739,6 +1979,7 @@ with tabs[5]:
             "Not enough data is available for root-cause screening."
         )
     else:
+        st.info(build_working_hypothesis(screening))
         screening["Screening Priority"] = pd.cut(
             screening["|SMD|"],
             bins=[
@@ -1760,6 +2001,7 @@ with tabs[5]:
             screening[
                 [
                     "Parameter",
+                    "Factor Role",
                     "OK n",
                     "OK Mean",
                     "NG n",
@@ -1769,6 +2011,7 @@ with tabs[5]:
                     "|SMD|",
                     "Mann-Whitney p",
                     "Screening Priority",
+                    "Technical Interpretation",
                 ]
             ],
             use_container_width=True,
@@ -1932,7 +2175,7 @@ with tabs[5]:
         "Surface / Adhesion / Wear Behavior\n"
         "        |\n"
         "        v\n"
-        "Peeling or White Powder after Deep Drawing",
+        "Peeling / Powder Shedding (掉粉) / White Powder after Deep Drawing",
         language="text",
     )
 
@@ -2039,6 +2282,9 @@ with tabs[7]:
     for line in conclusion_lines:
         st.write(f"- {line}")
 
+    st.error(order_level_limitation_text(df, order_col, quality_col))
+    st.info(build_working_hypothesis(report_screening))
+
     st.markdown("#### Mechanical Properties and Deep-Drawing Interpretation")
 
     if report_mechanical_summary.empty:
@@ -2056,6 +2302,30 @@ with tabs[7]:
             "They can affect the strain transferred to the AFP layer during deep drawing, "
             "but they do not directly measure AFP adhesion."
         )
+
+        # Directional screening note
+        try:
+            mech_idx = report_mechanical_summary.set_index("Source Variable")
+            if "HARDNESS_MEAN" in mech_idx.index and "EL" in mech_idx.index:
+                hdiff = mech_idx.loc["HARDNESS_MEAN", "NG - OK"]
+                ediff = mech_idx.loc["EL", "NG - OK"]
+                if pd.notna(hdiff) and pd.notna(ediff) and hdiff < 0 and ediff > 0:
+                    st.info(
+                        "Current direction: NG shows lower steel hardness and higher elongation. "
+                        "This does not clearly indicate poorer formability in NG, so mechanical properties "
+                        "are not the leading hypothesis at this stage."
+                    )
+        except Exception:
+            pass
+
+    st.markdown("#### Customer Failure Modes")
+
+    st.write(
+        "- **Peeling:** AFP layer separates from the surface.\n"
+        "- **Powder Shedding (掉粉):** white powder / loose coating residue appears after forming or rubbing.\n"
+        "- **Cracking:** AFP layer cracks due to local forming strain.\n\n"
+        "Powder shedding should be evaluated as a separate response because its mechanism may differ from simple peeling."
+    )
 
     st.markdown("#### What the analysis delivers")
 
