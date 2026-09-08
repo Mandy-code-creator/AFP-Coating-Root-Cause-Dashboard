@@ -1085,15 +1085,20 @@ def make_coil_level_distribution_chart(
             try:
                 p_value = shapiro(values).pvalue
 
-                if p_value < 0.05:
+                if p_value < 0.001:
                     normality_text = (
-                        f"{quality}: Shapiro p={p_value:.3f}\\n"
-                        "Departure from normality"
+                        f"{quality}: Non-normal\n"
+                        "Shapiro p<0.001"
+                    )
+                elif p_value < 0.05:
+                    normality_text = (
+                        f"{quality}: Non-normal\n"
+                        f"Shapiro p={p_value:.3f}"
                     )
                 else:
                     normality_text = (
-                        f"{quality}: Shapiro p={p_value:.3f}\\n"
-                        "No strong departure"
+                        f"{quality}: Approximately normal\n"
+                        f"Shapiro p={p_value:.3f}"
                     )
             except Exception:
                 normality_text = f"{quality}: Shapiro unavailable"
