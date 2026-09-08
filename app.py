@@ -921,6 +921,109 @@ def make_smd_ranking_chart(screening_df, top_n=15):
     return fig
 
 
+
+def make_coil_by_coil_dotplot(
+    df,
+    variable,
+    quality_col,
+    coil_col,
+    title=None,
+):
+    """
+    Plot one point per coil for a selected screening variable.
+
+    - X axis: COIL_NO
+    - Y axis: selected parameter
+    - OK and NG use different marker shapes
+    - No connecting line is drawn because coils are independent observations,
+      not a continuous time trend.
+    - If the same coil appears more than once, its numeric value is averaged;
+      the coil is classified NG if any row for that coil is NG.
+    """
+    required = [variable, quality_col, coil_col]
+    if any(c not in df.columns for c in required):
+        return None
+
+    work = df[required].copy()
+    work[variable] = pd.to_numeric(work[variable], errors="coerce")
+    work[quality_col] = work[quality_col].astype(str).str.upper().str.strip()
+    work = work[
+        work[variable].notna()
+        & work[coil_col].notna()
+        & work[quality_col].isin(["OK", "NG"])
+    ].copy()
+
+    if work.empty:
+        return None
+
+    # One observation per coil. If a coil has several rows, average its value;
+    # classify the coil as NG if any constituent row is NG.
+    value_by_coil = (
+        work.groupby(coil_col, dropna=False)[variable]
+        .mean()
+        .rename(variable)
+    )
+    quality_by_coil = (
+        work.groupby(coil_col, dropna=False)[quality_col]
+        .apply(lambda s: "NG" if (s == "NG").any() else "OK")
+        .rename(quality_col)
+    )
+
+    coil_df = pd.concat([value_by_coil, quality_by_coil], axis=1).reset_index()
+
+    # Put OK first and NG second so the comparison is easy to read.
+    coil_df["_quality_order"] = coil_df[quality_col].map({"OK": 0, "NG": 1})
+    coil_df["_coil_label"] = coil_df[coil_col].astype(str)
+    coil_df = coil_df.sort_values(
+        ["_quality_order", "_coil_label"],
+        kind="stable",
+    ).reset_index(drop=True)
+
+    n = len(coil_df)
+    fig_width = min(max(8.5, 0.34 * n + 3.0), 16.0)
+    fig, ax = plt.subplots(figsize=(fig_width, 4.8))
+
+    x = np.arange(n)
+    marker_map = {"OK": "o", "NG": "X"}
+
+    for quality in ["OK", "NG"]:
+        mask = coil_df[quality_col] == quality
+        if not mask.any():
+            continue
+        ax.scatter(
+            x[mask.to_numpy()],
+            coil_df.loc[mask, variable],
+            marker=marker_map[quality],
+            s=58,
+            label=quality,
+            alpha=0.90,
+        )
+
+    # Add a subtle separator when both classes are present.
+    ok_n = int((coil_df[quality_col] == "OK").sum())
+    ng_n = int((coil_df[quality_col] == "NG").sum())
+    if ok_n > 0 and ng_n > 0:
+        ax.axvline(ok_n - 0.5, linewidth=1, linestyle="--", alpha=0.45)
+
+    ax.set_xticks(x)
+    ax.set_xticklabels(
+        coil_df["_coil_label"],
+        rotation=60,
+        ha="right",
+        fontsize=8,
+    )
+    ax.set_xlabel("Coil Number")
+    ax.set_ylabel(DISPLAY.get(variable, variable))
+    ax.set_title(
+        title or f"{DISPLAY.get(variable, variable)} - Coil-by-Coil OK vs NG",
+        fontweight="bold",
+    )
+    ax.grid(axis="y", alpha=0.25)
+    ax.legend(title="Quality")
+    fig.tight_layout()
+    return fig
+
+
 def figure_to_base64(fig):
     buffer = io.BytesIO()
     fig.savefig(
@@ -1330,6 +1433,47 @@ def generate_html_report(
                 + "</div>"
             )
 
+    coil_chart_html = ""
+    if screening_df is not None and not screening_df.empty:
+        coil_chart_blocks = []
+        top_coil_vars = (
+            screening_df["Source Variable"]
+            .dropna()
+            .head(4)
+            .tolist()
+        )
+
+        for variable in top_coil_vars:
+            if variable not in df.columns:
+                continue
+            try:
+                fig = make_coil_by_coil_dotplot(
+                    df,
+                    variable,
+                    quality_col,
+                    coil_col,
+                )
+                if fig is None:
+                    continue
+                encoded = figure_to_base64(fig)
+                coil_chart_blocks.append(
+                    f"""
+                    <div class="chart-card">
+                        <img src="data:image/png;base64,{encoded}"
+                             alt="{html_lib.escape(DISPLAY.get(variable, variable))} - Coil-by-Coil">
+                    </div>
+                    """
+                )
+            except Exception:
+                pass
+
+        if coil_chart_blocks:
+            coil_chart_html = (
+                '<div class="chart-grid">'
+                + "".join(coil_chart_blocks)
+                + "</div>"
+            )
+
     return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -1415,7 +1559,7 @@ These results do not prove root cause.
 </p>
 
 <h2>4. OK vs NG Direction and Separation (Signed SMD)</h2>
-{signed_smd_chart_html if signed_smd_chart_html else "<p>No trend chart available.</p>"}
+{signed_smd_chart_html if signed_smd_chart_html else "<p>No signed-SMD chart available.</p>"}
 <p class="note">
 Positive SMD means NG &gt; OK; negative SMD means NG &lt; OK.
 The absolute magnitude indicates standardized OK-NG separation strength.
@@ -1436,17 +1580,23 @@ Boxplots show the actual distribution of OK and NG values. Greater separation an
 support a stronger screening signal; overlap means the factor alone may not explain all NG cases.
 </p>
 
-<h2>7. Supporting Analysis - Mechanical Properties</h2>
+<h2>7. Coil-by-Coil Dot Plots - Top Screening Factors</h2>
+{coil_chart_html if coil_chart_html else "<p>No coil-level chart available.</p>"}
+<p class="note">
+Each point represents one coil. OK and NG coils use different markers. Coils are not connected by lines because they are independent observations rather than a continuous time trend.
+</p>
+
+<h2>8. Supporting Analysis - Mechanical Properties</h2>
 {mechanical_table}
 <div class="summary-box">{html_lib.escape(mechanical_conclusion)}</div>
 
-<h2>8. Supporting Analysis - Surface QC</h2>
+<h2>9. Supporting Analysis - Surface QC</h2>
 {order_table}
 <p class="note">
 If one representative coil is used for the complete order, these results are descriptive at ORDER level.
 </p>
 
-<h2>9. Recommended Next Actions</h2>
+<h2>10. Recommended Next Actions</h2>
 <ol>
 <li>Collect additional independent OK and NG orders.</li>
 <li>Verify the top 2-3 screening factors with matched samples or a controlled trial.</li>
@@ -1761,7 +1911,65 @@ def generate_word_report(
             f"Boxplots could not be generated: {exc}"
         )
 
-    doc.add_heading("7. Supporting Analysis - Mechanical Properties", level=1)
+    doc.add_heading("7. Coil-by-Coil Dot Plots - Top Screening Factors", level=1)
+
+    try:
+        top_coil_vars = (
+            screening_df["Source Variable"]
+            .dropna()
+            .head(4)
+            .tolist()
+            if screening_df is not None and not screening_df.empty
+            else []
+        )
+
+        if not top_coil_vars:
+            doc.add_paragraph("No coil-level variables are available.")
+        else:
+            for variable in top_coil_vars:
+                if variable not in df.columns:
+                    continue
+
+                fig = make_coil_by_coil_dotplot(
+                    df,
+                    variable,
+                    quality_col,
+                    coil_col,
+                    title=DISPLAY.get(variable, variable),
+                )
+                if fig is None:
+                    continue
+
+                coil_buffer = io.BytesIO()
+                fig.savefig(
+                    coil_buffer,
+                    format="png",
+                    dpi=160,
+                    bbox_inches="tight",
+                )
+                plt.close(fig)
+                coil_buffer.seek(0)
+
+                doc.add_picture(
+                    coil_buffer,
+                    width=Inches(6.7),
+                )
+
+            p = doc.add_paragraph(
+                "Each point represents one coil. OK and NG coils use different markers. "
+                "No connecting line is used because coils are independent observations, "
+                "not a continuous time trend."
+            )
+            for run in p.runs:
+                run.italic = True
+                run.font.size = Pt(8)
+
+    except Exception as exc:
+        doc.add_paragraph(
+            f"Coil-by-coil charts could not be generated: {exc}"
+        )
+
+    doc.add_heading("8. Supporting Analysis - Mechanical Properties", level=1)
     _add_word_table(
         doc,
         mechanical_summary_df,
@@ -1776,7 +1984,7 @@ def generate_word_report(
     )
     doc.add_paragraph(mechanical_conclusion)
 
-    doc.add_heading("8. Supporting Analysis - Surface QC", level=1)
+    doc.add_heading("9. Supporting Analysis - Surface QC", level=1)
     _add_word_table(
         doc,
         order_summary_df,
@@ -1790,7 +1998,7 @@ def generate_word_report(
         ],
     )
 
-    doc.add_heading("9. Supplier Benchmark Analysis", level=1)
+    doc.add_heading("10. Supplier Benchmark Analysis", level=1)
 
     p = doc.add_paragraph()
     p.add_run("Supplier experimental risk benchmark: ").bold = True
@@ -1862,7 +2070,7 @@ def generate_word_report(
         run.italic = True
         run.font.size = Pt(8)
 
-    doc.add_heading("10. Recommended Next Actions", level=1)
+    doc.add_heading("11. Recommended Next Actions", level=1)
 
     actions = [
         "Collect additional independent OK and NG orders.",
@@ -3034,6 +3242,35 @@ with tabs[7]:
 
         st.caption(
             "Boxplots show the actual distribution and overlap between OK and NG."
+        )
+
+        st.markdown("#### Coil-by-Coil Dot Plots - Top Screening Factors")
+
+        top_coil_vars = (
+            report_screening["Source Variable"]
+            .dropna()
+            .head(4)
+            .tolist()
+        )
+
+        for variable in top_coil_vars:
+            if variable not in df.columns:
+                continue
+
+            coil_fig = make_coil_by_coil_dotplot(
+                df,
+                variable,
+                quality_col,
+                coil_col,
+            )
+            if coil_fig is not None:
+                st.pyplot(
+                    coil_fig,
+                    use_container_width=True,
+                )
+
+        st.caption(
+            "Each point represents one coil. OK and NG use different markers; no line is drawn between coils."
         )
 
         report_preview = _prepare_report_screening(
