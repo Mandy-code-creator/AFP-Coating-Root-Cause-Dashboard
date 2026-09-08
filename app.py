@@ -16,7 +16,7 @@ from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 
 try:
-    from scipy.stats import mannwhitneyu
+    from scipy.stats import mannwhitneyu, shapiro
     SCIPY_AVAILABLE = True
 except Exception:
     SCIPY_AVAILABLE = False
@@ -922,7 +922,7 @@ def make_smd_ranking_chart(screening_df, top_n=15):
 
 
 
-def make_coil_by_coil_dotplot(
+def make_coil_level_distribution_chart(
     df,
     variable,
     quality_col,
@@ -930,23 +930,33 @@ def make_coil_by_coil_dotplot(
     title=None,
 ):
     """
-    Plot one point per coil for a selected screening variable.
+    Integrated coil-level OK vs NG distribution chart.
 
-    - X axis: COIL_NO
-    - Y axis: selected parameter
-    - OK and NG use different marker shapes
-    - No connecting line is drawn because coils are independent observations,
-      not a continuous time trend.
-    - If the same coil appears more than once, its numeric value is averaged;
-      the coil is classified NG if any row for that coil is NG.
+    One figure combines:
+    - violin distribution shape,
+    - boxplot,
+    - one point per coil,
+    - Shapiro-Wilk normality diagnostic for each quality group.
+
+    If one coil appears more than once, its numeric value is averaged.
+    The coil is classified as NG if any row for that coil is NG.
+
+    This is a screening / descriptive chart, not causal proof.
     """
+
     required = [variable, quality_col, coil_col]
     if any(c not in df.columns for c in required):
         return None
 
     work = df[required].copy()
     work[variable] = pd.to_numeric(work[variable], errors="coerce")
-    work[quality_col] = work[quality_col].astype(str).str.upper().str.strip()
+    work[quality_col] = (
+        work[quality_col]
+        .astype(str)
+        .str.upper()
+        .str.strip()
+    )
+
     work = work[
         work[variable].notna()
         & work[coil_col].notna()
@@ -956,70 +966,174 @@ def make_coil_by_coil_dotplot(
     if work.empty:
         return None
 
-    # One observation per coil. If a coil has several rows, average its value;
-    # classify the coil as NG if any constituent row is NG.
+    # One point per coil.
     value_by_coil = (
         work.groupby(coil_col, dropna=False)[variable]
         .mean()
         .rename(variable)
     )
+
     quality_by_coil = (
         work.groupby(coil_col, dropna=False)[quality_col]
         .apply(lambda s: "NG" if (s == "NG").any() else "OK")
         .rename(quality_col)
     )
 
-    coil_df = pd.concat([value_by_coil, quality_by_coil], axis=1).reset_index()
+    coil_df = (
+        pd.concat(
+            [value_by_coil, quality_by_coil],
+            axis=1,
+        )
+        .reset_index()
+    )
 
-    # Put OK first and NG second so the comparison is easy to read.
-    coil_df["_quality_order"] = coil_df[quality_col].map({"OK": 0, "NG": 1})
-    coil_df["_coil_label"] = coil_df[coil_col].astype(str)
-    coil_df = coil_df.sort_values(
-        ["_quality_order", "_coil_label"],
-        kind="stable",
-    ).reset_index(drop=True)
+    groups = []
+    positions = []
+    labels = []
 
-    n = len(coil_df)
-    fig_width = min(max(8.5, 0.34 * n + 3.0), 16.0)
-    fig, ax = plt.subplots(figsize=(fig_width, 4.8))
-
-    x = np.arange(n)
-    marker_map = {"OK": "o", "NG": "X"}
-
-    for quality in ["OK", "NG"]:
-        mask = coil_df[quality_col] == quality
-        if not mask.any():
-            continue
-        ax.scatter(
-            x[mask.to_numpy()],
-            coil_df.loc[mask, variable],
-            marker=marker_map[quality],
-            s=58,
-            label=quality,
-            alpha=0.90,
+    for pos, quality in enumerate(["OK", "NG"], start=1):
+        values = (
+            coil_df.loc[
+                coil_df[quality_col] == quality,
+                variable,
+            ]
+            .dropna()
+            .astype(float)
+            .values
         )
 
-    # Add a subtle separator when both classes are present.
-    ok_n = int((coil_df[quality_col] == "OK").sum())
-    ng_n = int((coil_df[quality_col] == "NG").sum())
-    if ok_n > 0 and ng_n > 0:
-        ax.axvline(ok_n - 0.5, linewidth=1, linestyle="--", alpha=0.45)
+        if len(values) == 0:
+            continue
 
-    ax.set_xticks(x)
+        groups.append(values)
+        positions.append(pos)
+        labels.append(quality)
+
+    if not groups:
+        return None
+
+    fig, ax = plt.subplots(figsize=(7.6, 5.3))
+
+    # Violin distribution shape.
+    violin_groups = []
+    violin_positions = []
+
+    for pos, values in zip(positions, groups):
+        if len(values) >= 2 and np.nanstd(values) > 0:
+            violin_positions.append(pos)
+            violin_groups.append(values)
+
+    if violin_groups:
+        violin = ax.violinplot(
+            violin_groups,
+            positions=violin_positions,
+            widths=0.72,
+            showmeans=False,
+            showmedians=False,
+            showextrema=False,
+        )
+
+        for body in violin["bodies"]:
+            body.set_alpha(0.20)
+
+    # Boxplot in the center.
+    try:
+        ax.boxplot(
+            groups,
+            positions=positions,
+            widths=0.22,
+            showmeans=True,
+            tick_labels=labels,
+        )
+    except TypeError:
+        ax.boxplot(
+            groups,
+            positions=positions,
+            widths=0.22,
+            showmeans=True,
+            labels=labels,
+        )
+
+    marker_map = {
+        "OK": "o",
+        "NG": "X",
+    }
+
+    for pos, quality, values in zip(positions, labels, groups):
+        n = len(values)
+
+        # Deterministic jitter so the same data always render the same way.
+        if n == 1:
+            jitter = np.array([0.0])
+        else:
+            jitter = np.linspace(-0.15, 0.15, n)
+
+        display_values = np.sort(values)
+
+        ax.scatter(
+            pos + jitter,
+            display_values,
+            marker=marker_map.get(quality, "o"),
+            s=50,
+            alpha=0.82,
+            label=f"{quality} coils (n={n})",
+            zorder=3,
+        )
+
+        # Normality diagnostic.
+        if SCIPY_AVAILABLE and 3 <= n <= 5000:
+            try:
+                p_value = shapiro(values).pvalue
+
+                if p_value < 0.05:
+                    normality_text = (
+                        f"{quality}: Shapiro p={p_value:.3f}\\n"
+                        "Departure from normality"
+                    )
+                else:
+                    normality_text = (
+                        f"{quality}: Shapiro p={p_value:.3f}\\n"
+                        "No strong departure"
+                    )
+            except Exception:
+                normality_text = f"{quality}: Shapiro unavailable"
+        elif n < 3:
+            normality_text = f"{quality}: Shapiro N/A (n<3)"
+        else:
+            normality_text = f"{quality}: Shapiro N/A"
+
+        ax.text(
+            pos,
+            1.015,
+            normality_text,
+            transform=ax.get_xaxis_transform(),
+            ha="center",
+            va="bottom",
+            fontsize=8,
+        )
+
+    ax.set_xticks(positions)
     ax.set_xticklabels(
-        coil_df["_coil_label"],
-        rotation=60,
-        ha="right",
-        fontsize=8,
+        [
+            f"{label}\\n(n={len(values)})"
+            for label, values in zip(labels, groups)
+        ]
     )
-    ax.set_xlabel("Coil Number")
+
+    ax.set_xlabel("Quality Class")
     ax.set_ylabel(DISPLAY.get(variable, variable))
     ax.set_title(
-        title or f"{DISPLAY.get(variable, variable)} - Coil-by-Coil OK vs NG",
+        title
+        or f"{DISPLAY.get(variable, variable)} - Coil-Level Distribution",
         fontweight="bold",
+        pad=32,
     )
     ax.grid(axis="y", alpha=0.25)
-    ax.legend(title="Quality")
+    ax.legend(
+        title="Individual coils",
+        loc="best",
+    )
+
     fig.tight_layout()
     return fig
 
@@ -1447,7 +1561,7 @@ def generate_html_report(
             if variable not in df.columns:
                 continue
             try:
-                fig = make_coil_by_coil_dotplot(
+                fig = make_coil_level_distribution_chart(
                     df,
                     variable,
                     quality_col,
@@ -1460,7 +1574,7 @@ def generate_html_report(
                     f"""
                     <div class="chart-card">
                         <img src="data:image/png;base64,{encoded}"
-                             alt="{html_lib.escape(DISPLAY.get(variable, variable))} - Coil-by-Coil">
+                             alt="{html_lib.escape(DISPLAY.get(variable, variable))} - Coil-Level Distribution">
                     </div>
                     """
                 )
@@ -1580,10 +1694,12 @@ Boxplots show the actual distribution of OK and NG values. Greater separation an
 support a stronger screening signal; overlap means the factor alone may not explain all NG cases.
 </p>
 
-<h2>7. Coil-by-Coil Dot Plots - Top Screening Factors</h2>
-{coil_chart_html if coil_chart_html else "<p>No coil-level chart available.</p>"}
+<h2>7. Coil-Level Distribution - Top Screening Factors</h2>
+{coil_chart_html if coil_chart_html else "<p>No coil-level distribution chart available.</p>"}
 <p class="note">
-Each point represents one coil. OK and NG coils use different markers. Coils are not connected by lines because they are independent observations rather than a continuous time trend.
+Each point represents one coil. Violin width represents distribution density; the boxplot shows median and spread.
+The Shapiro-Wilk p-value above each group is a normality diagnostic.
+p &gt;= 0.05 means no strong evidence against normality in the current sample; it does not prove normality.
 </p>
 
 <h2>8. Supporting Analysis - Mechanical Properties</h2>
@@ -1911,7 +2027,7 @@ def generate_word_report(
             f"Boxplots could not be generated: {exc}"
         )
 
-    doc.add_heading("7. Coil-by-Coil Dot Plots - Top Screening Factors", level=1)
+    doc.add_heading("7. Coil-Level Distribution - Top Screening Factors", level=1)
 
     try:
         top_coil_vars = (
@@ -1930,7 +2046,7 @@ def generate_word_report(
                 if variable not in df.columns:
                     continue
 
-                fig = make_coil_by_coil_dotplot(
+                fig = make_coil_level_distribution_chart(
                     df,
                     variable,
                     quality_col,
@@ -1956,9 +2072,10 @@ def generate_word_report(
                 )
 
             p = doc.add_paragraph(
-                "Each point represents one coil. OK and NG coils use different markers. "
-                "No connecting line is used because coils are independent observations, "
-                "not a continuous time trend."
+                "Each point represents one coil. Violin width shows distribution density; "
+                "the boxplot shows median and spread. The Shapiro-Wilk p-value above each "
+                "OK/NG group is a normality diagnostic. p >= 0.05 means no strong evidence "
+                "against normality in the current sample; it does not prove normality."
             )
             for run in p.runs:
                 run.italic = True
@@ -3244,7 +3361,7 @@ with tabs[7]:
             "Boxplots show the actual distribution and overlap between OK and NG."
         )
 
-        st.markdown("#### Coil-by-Coil Dot Plots - Top Screening Factors")
+        st.markdown("#### Coil-Level Distribution - Top Screening Factors")
 
         top_coil_vars = (
             report_screening["Source Variable"]
@@ -3257,7 +3374,7 @@ with tabs[7]:
             if variable not in df.columns:
                 continue
 
-            coil_fig = make_coil_by_coil_dotplot(
+            coil_fig = make_coil_level_distribution_chart(
                 df,
                 variable,
                 quality_col,
@@ -3270,7 +3387,10 @@ with tabs[7]:
                 )
 
         st.caption(
-            "Each point represents one coil. OK and NG use different markers; no line is drawn between coils."
+            "Each point represents one coil. Violin width shows distribution density, "
+            "the boxplot shows median/spread, and Shapiro p-values above OK/NG provide "
+            "a normality diagnostic. p >= 0.05 means no strong evidence against normality; "
+            "it does not prove normality."
         )
 
         report_preview = _prepare_report_screening(
