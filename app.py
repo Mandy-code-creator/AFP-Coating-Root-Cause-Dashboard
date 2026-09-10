@@ -127,6 +127,18 @@ DISPLAY = {
 
 
 # ============================================================
+# GLOBAL SCREENING EXCLUSIONS
+# These variables remain in the raw/source data but are excluded
+# from OK-vs-NG screening, ranking, charts, conclusions and reports.
+# ============================================================
+SCREENING_EXCLUDE_VARIABLES = {
+    "AFP_BOTTOM_RANGE",      # AFP Down Thickness Range (N-C-S)
+    "OVEN_TEMPERATURE",      # Oven Temperature
+    "ROLL_TEMPERATURE",      # Roll Temperature
+}
+
+
+# ============================================================
 # SUPPLIER BENCHMARK - SUPPORTING TECHNICAL EVIDENCE
 # ============================================================
 
@@ -399,6 +411,10 @@ def build_summary(df, variables, quality_col):
     rows = []
 
     for variable in variables:
+        # Exclude selected variables from all screening/report analysis.
+        if variable in SCREENING_EXCLUDE_VARIABLES:
+            continue
+
         if variable not in df.columns:
             continue
 
@@ -695,6 +711,12 @@ def build_working_hypothesis(screening_df):
         return "Insufficient data to construct a working hypothesis."
 
     work = screening_df.dropna(subset=["|SMD|"]).copy()
+
+    if "Source Variable" in work.columns:
+        work = work[
+            ~work["Source Variable"].isin(SCREENING_EXCLUDE_VARIABLES)
+        ].copy()
+
     if work.empty:
         return "Insufficient data to construct a working hypothesis."
 
@@ -836,6 +858,7 @@ def make_signed_smd_chart(screening_df, top_n=15):
         return None
 
     chart_df = screening_df.dropna(subset=["SMD"]).copy()
+
     if chart_df.empty:
         return None
 
@@ -1187,6 +1210,10 @@ def build_executive_conclusion(screening_df):
         ]
 
     ranked = screening_df.dropna(subset=["|SMD|"]).copy()
+    if "Source Variable" in ranked.columns:
+        ranked = ranked[
+            ~ranked["Source Variable"].isin(SCREENING_EXCLUDE_VARIABLES)
+        ].copy()
     if ranked.empty:
         return [
             "The available variables do not contain enough numeric OK-versus-NG information for effect-size screening."
@@ -1287,6 +1314,12 @@ def _prepare_report_screening(screening_df, top_n=10):
         return pd.DataFrame()
 
     out = screening_df.copy()
+
+    if "Source Variable" in out.columns:
+        out = out[
+            ~out["Source Variable"].isin(SCREENING_EXCLUDE_VARIABLES)
+        ].copy()
+
     out["Screening Result"] = out.apply(
         classify_screening_result,
         axis=1,
@@ -1356,6 +1389,10 @@ def _key_result_sentence(screening_df):
         return "No reliable OK-versus-NG ranking is available."
 
     ranked = screening_df.dropna(subset=["|SMD|"]).copy()
+    if "Source Variable" in ranked.columns:
+        ranked = ranked[
+            ~ranked["Source Variable"].isin(SCREENING_EXCLUDE_VARIABLES)
+        ].copy()
     if ranked.empty:
         return "No reliable OK-versus-NG ranking is available."
 
